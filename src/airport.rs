@@ -1,5 +1,9 @@
+use std::sync::Arc;
+
+pub type AirportId = Arc<str>;
+
 #[derive(PartialEq)]
 pub struct Airport {
-    pub id: String,
+    pub id: AirportId,
     pub mtt: u16
 }

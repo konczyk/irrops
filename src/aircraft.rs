@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use crate::airport::Airport;
 
 pub struct Time {
@@ -7,7 +8,7 @@ pub struct Time {
 
 impl Time {
     pub fn to_minutes(&self) -> u16 {
-        self.minute * 60 + self.hour
+        self.hour * 60 + self.minute
     }
 }
 
@@ -16,8 +17,10 @@ pub struct Availability {
     pub to: Time,
 }
 
+pub type AircraftId = Arc<str>;
+
 pub struct Aircraft {
-    pub id: String,
+    pub id: AircraftId,
     pub disruptions: Vec<Availability>,
     pub initial_location: Airport,
 }
