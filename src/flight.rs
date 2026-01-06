@@ -5,7 +5,7 @@ use crate::airport::Airport;
 pub type FlightId = Arc<str>;
 
 pub struct Flight {
-    id: FlightId,
+    pub id: FlightId,
     pub aircraft_id: Option<AircraftId>,
     pub origin: Airport,
     pub destination: Airport,
