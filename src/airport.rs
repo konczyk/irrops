@@ -1,4 +1,4 @@
 pub struct Airport {
     id: String,
-    mtt: u16
+    pub mtt: u16
 }

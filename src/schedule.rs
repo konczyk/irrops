@@ -13,26 +13,25 @@ impl Schedule {
     }
 
     fn assign(&mut self)  {
-        let mut busy = self.aircraft.iter()
+        let mut sorted_ids = self.aircraft.keys().collect::<Vec<&String>>();
+        sorted_ids.sort();
+        let mut busy = sorted_ids.iter()
+            .filter_map(|id| self.aircraft.get(*id).map(|ac| (*id, ac)))
             .map(|(id, ac)| {
                 (id.clone(), ac.disruptions.iter().map(|d| (d.from.to_minutes(), d.to.to_minutes())).collect())
-            }).collect::<HashMap<String, Vec<(u16, u16)>>>();
+            }).collect::<Vec<(String, Vec<(u16, u16)>)>>();
 
-        self.flights.sort_by(|a, b| a.departure_time.cmp(&b.departure_time));
+        self.flights.sort_by_key(|f| f.departure_time);
         self.flights.iter_mut().for_each(|flight| {
-            let ac = busy.iter().find(|(_, blocks)| {
+            if let Some((id, intervals)) = busy.iter_mut().find(|(_, blocks)| {
                 blocks.iter().all(|(from, to)| {
                     flight.departure_time > *to || flight.arrival_time < *from
                 })
-            }).map(|(id, _)| id.clone());
-
-            if let Some(id) = ac {
+            }) {
                 flight.aircraft_id = Some(id.clone());
-                if let Some(intervals) = busy.get_mut(&id) {
-                   intervals.push((flight.departure_time, flight.arrival_time))
-
-                }
+                intervals.push((flight.departure_time, (flight.arrival_time + flight.destination.mtt).clamp(0, 60*24)))
             }
+
         });
     }
 }
