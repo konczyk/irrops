@@ -1,3 +1,5 @@
+use crate::airport::Airport;
+
 pub struct Time {
     hour: u16,
     minute: u16,
@@ -16,5 +18,6 @@ pub struct Availability {
 
 pub struct Aircraft {
     pub id: String,
-    pub disruptions: Vec<Availability>
+    pub disruptions: Vec<Availability>,
+    pub initial_location: Airport,
 }

@@ -1,4 +1,5 @@
+#[derive(PartialEq)]
 pub struct Airport {
-    id: String,
+    pub id: String,
     pub mtt: u16
 }
