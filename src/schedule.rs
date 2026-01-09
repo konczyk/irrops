@@ -1,6 +1,6 @@
 use crate::aircraft::{Aircraft, AircraftId};
 use crate::airport::AirportId;
-use crate::flight::Flight;
+use crate::flight::{Flight, FlightId};
 use std::collections::HashMap;
 use std::sync::Arc;
 use crate::time::Time;
@@ -8,11 +8,18 @@ use crate::time::Time;
 pub struct Schedule {
     aircraft: HashMap<AircraftId, Aircraft>,
     flights: Vec<Flight>,
+    flights_index: HashMap<FlightId, usize>
 }
 
 impl Schedule {
-    pub fn new(aircraft: HashMap<AircraftId, Aircraft>, flights: Vec<Flight>) -> Schedule {
-        Schedule { aircraft, flights  }
+    pub fn new(aircraft: HashMap<AircraftId, Aircraft>, mut flights: Vec<Flight>) -> Schedule {
+        flights.sort_by_key(|f| f.departure_time);
+        let flights_index = flights.iter().enumerate().map(|(i, v)| (v.id.clone(), i)).collect::<HashMap<FlightId, usize>>();
+        Schedule {
+            aircraft,
+            flights,
+            flights_index
+        }
     }
 
     fn assign(&mut self)  {
