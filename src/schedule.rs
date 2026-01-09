@@ -298,26 +298,39 @@ mod proptests {
             schedule.assign();
 
             for ac_id in schedule.aircraft.keys() {
-                // ...get all flights assigned to it, sorted by time.
                 let mut assigned: Vec<_> = schedule.flights.iter()
                     .filter(|f| f.aircraft_id.as_ref() == Some(ac_id))
                     .collect();
 
                 assigned.sort_by_key(|f| f.departure_time);
 
-                // Ensure every sequential pair obeys the MTT rule
                 for pair in assigned.windows(2) {
                     let first = &pair[0];
                     let second = &pair[1];
 
                     let ready_at = (first.arrival_time + 30).min(1440);
 
-                    // prop_assert! is like assert!, but triggers the "Shrinker" on failure
                     prop_assert!(
                         second.departure_time >= ready_at,
                         "\nOverlap on {}:\nFlight {} (ends {}+30m MTT) vs Flight {} (starts {})",
                         ac_id, first.id, first.arrival_time, second.id, second.departure_time
                     );
+
+                    prop_assert!(
+                        first.destination == second.origin,
+                        "\nWrong airport:\nFlight {} lands at {} vs Flight {} (takes off at {})",
+                        first.id, first.destination.id, second.id, second.origin.id
+                    );
+                }
+
+                if let Some(first_flight) = assigned.first() {
+                    if let Some(ac) = schedule.aircraft.get(&first_flight.aircraft_id.clone().unwrap()) {
+                        prop_assert!(
+                            first_flight.origin == ac.initial_location,
+                            "\nWrong airport:\nAircraft {} originates at {} but Flight {} (takes off at {})",
+                            ac.id, ac.initial_location.id, first_flight.id, first_flight.origin.id
+                        );
+                    }
                 }
             }
         }
