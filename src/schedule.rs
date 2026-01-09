@@ -43,10 +43,10 @@ impl Schedule {
 
 #[cfg(test)]
 mod tests {
+    use crate::aircraft::Availability;
     use super::*;
     use crate::airport::Airport;
 
-    // Helper to create Arc<str> IDs
     fn id(s: &str) -> Arc<str> { Arc::from(s) }
 
     #[test]
@@ -119,7 +119,6 @@ mod tests {
 
         assert_eq!(schedule.flights[0].aircraft_id, Some(ac_id));
         assert_eq!(schedule.flights[1].aircraft_id, None);
-
     }
 
     #[test]
@@ -181,5 +180,69 @@ mod tests {
         schedule.assign();
     
         assert_eq!(schedule.flights[0].aircraft_id, Some(ac_a));
+    }
+
+    #[test]
+    fn test_disruption() {
+        let ac_id = id("PLANE_1");
+        let mut aircraft = HashMap::new();
+        aircraft.insert(ac_id.clone(), Aircraft {
+            id: ac_id.clone(),
+            initial_location: Airport { id: id("KRK"), mtt: 30 },
+            disruptions: vec![Availability { from: 150u16.into(), to: 250u16.into() }],
+        });
+
+        let flights = vec![
+            Flight {
+                id: id("FLIGHT_1"),
+                origin: Airport { id: id("KRK"), mtt: 30 },
+                destination: Airport { id: id("WAW"), mtt: 30 },
+                departure_time: 100,
+                arrival_time: 200,
+                aircraft_id: None
+            },
+        ];
+
+        let mut schedule = Schedule::new(aircraft, flights);
+        schedule.assign();
+
+        assert_eq!(schedule.flights[0].aircraft_id, None);
+    }
+
+
+    #[test]
+    fn test_perfect_fit_mtt() {
+        let ac_id = id("PLANE_1");
+        let mut aircraft = HashMap::new();
+        aircraft.insert(ac_id.clone(), Aircraft {
+            id: ac_id.clone(),
+            initial_location: Airport { id: id("KRK"), mtt: 30 },
+            disruptions: vec![],
+        });
+
+        let flights = vec![
+            Flight {
+                id: id("FLIGHT_1"),
+                origin: Airport { id: id("KRK"), mtt: 30 },
+                destination: Airport { id: id("WAW"), mtt: 30 },
+                departure_time: 100,
+                arrival_time: 200,
+                aircraft_id: None
+            },
+            Flight {
+                id: id("FLIGHT_2"),
+                origin: Airport { id: id("WAW"), mtt: 30 },
+                destination: Airport { id: id("GDN"), mtt: 30 },
+                departure_time: 230,
+                arrival_time: 300,
+                aircraft_id: None
+            },
+        ];
+
+        let mut schedule = Schedule::new(aircraft, flights);
+        schedule.assign();
+
+        assert_eq!(schedule.flights[0].aircraft_id, Some(ac_id.clone()));
+        assert_eq!(schedule.flights[1].aircraft_id, Some(ac_id.clone()));
     }
 }

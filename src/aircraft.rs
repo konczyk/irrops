@@ -12,6 +12,15 @@ impl Time {
     }
 }
 
+impl From<u16> for Time {
+    fn from(value: u16) -> Self {
+        Self {
+            hour: value / 60,
+            minute: value % 60,
+        }
+    }
+}
+
 pub struct Availability {
     pub from: Time,
     pub to: Time,
