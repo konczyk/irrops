@@ -22,7 +22,7 @@ impl Schedule {
         }
     }
 
-    fn assign(&mut self)  {
+    pub fn assign(&mut self)  {
         let mut sorted_ids = self.aircraft.keys().collect::<Vec<&Arc<str>>>();
         sorted_ids.sort();
         let mut busy = sorted_ids.iter()
@@ -46,6 +46,30 @@ impl Schedule {
                 }
 
         });
+    }
+
+    pub fn apply_delay(&mut self, flight_id: FlightId, shift: u64) {
+        let idx = self.flights_index.get(&flight_id);
+        let result = idx.and_then(|i| Some((i, self.flights[*i].aircraft_id.clone())));
+        if let Some((f_id, aid)) = result {
+            self.flights[*f_id].departure_time += shift;
+            self.flights[*f_id].arrival_time += shift;
+
+            if let Some(ac_id) = aid {
+                let mut prev_arrival_time = self.flights[*f_id].arrival_time;
+
+                for flight in self.flights.iter_mut().skip(*f_id + 1).filter(|f| f.aircraft_id.as_ref().map(|x| **x == *ac_id).unwrap_or(false)) {
+                    if flight.departure_time < prev_arrival_time + flight.origin.mtt {
+                        let len = flight.arrival_time - flight.departure_time;
+                        flight.departure_time = prev_arrival_time + flight.origin.mtt;
+                        flight.arrival_time = flight.departure_time + len;
+                        prev_arrival_time = flight.arrival_time;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -288,6 +312,74 @@ mod tests {
 
         assert_eq!(schedule.flights[0].aircraft_id, Some(ac_id));
         assert_eq!(schedule.flights[1].aircraft_id, None);
+    }
+
+    #[test]
+    fn test_delay_full_absorption() {
+        let ac_id1 = id("PLANE_1");
+        let ac_id2 = id("PLANE_2");
+        let mut aircraft = HashMap::new();
+        aircraft.insert(ac_id1.clone(), Aircraft {
+            id: ac_id1.clone(),
+            initial_location: Airport { id: id("KRK"), mtt: 30 },
+            disruptions: vec![],
+        });
+        aircraft.insert(ac_id2.clone(), Aircraft {
+            id: ac_id2.clone(),
+            initial_location: Airport { id: id("WAW"), mtt: 30 },
+            disruptions: vec![],
+        });
+
+        let flights = vec![
+            Flight {
+                id: id("FLIGHT_1"),
+                origin: Airport { id: id("KRK"), mtt: 30 },
+                destination: Airport { id: id("WRO"), mtt: 30 },
+                departure_time: 1200,
+                arrival_time: 1500,
+                aircraft_id: Some(ac_id1.clone()),
+            },
+            Flight {
+                id: id("FLIGHT_2"),
+                origin: Airport { id: id("WRO"), mtt: 30 },
+                destination: Airport { id: id("WAW"), mtt: 30 },
+                departure_time: 1800,
+                arrival_time: 2000,
+                aircraft_id: Some(ac_id1.clone()),
+            },
+            Flight {
+                id: id("FLIGHT_3"),
+                origin: Airport { id: id("WAW"), mtt: 30 },
+                destination: Airport { id: id("GDN"), mtt: 30 },
+                departure_time: 2100,
+                arrival_time: 2350,
+                aircraft_id: Some(ac_id1.clone()),
+            },
+            Flight {
+                id: id("FLIGHT_4"),
+                origin: Airport { id: id("WAW"), mtt: 30 },
+                destination: Airport { id: id("GDN"), mtt: 30 },
+                departure_time: 2100,
+                arrival_time: 2300,
+                aircraft_id: Some(ac_id2),
+            },
+        ];
+
+        let mut schedule = Schedule::new(aircraft, flights);
+        schedule.assign();
+        schedule.apply_delay(id("FLIGHT_1"), 500);
+
+        assert_eq!(1200 + 500, schedule.flights[0].departure_time);
+        assert_eq!(1500 + 500, schedule.flights[0].arrival_time);
+
+        assert_eq!(2000 + 30, schedule.flights[1].departure_time);
+        assert_eq!(2000 + 30 + 200, schedule.flights[1].arrival_time);
+
+        assert_eq!(2230 + 30, schedule.flights[2].departure_time);
+        assert_eq!(2230 + 30 + 250, schedule.flights[2].arrival_time);
+
+        assert_eq!(2100, schedule.flights[3].departure_time);
+        assert_eq!(2300, schedule.flights[3].arrival_time);
     }
 }
 
