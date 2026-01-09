@@ -3,6 +3,7 @@ use crate::airport::AirportId;
 use crate::flight::Flight;
 use std::collections::HashMap;
 use std::sync::Arc;
+use crate::time::Time;
 
 pub struct Schedule {
     aircraft: HashMap<AircraftId, Aircraft>,
@@ -20,8 +21,8 @@ impl Schedule {
         let mut busy = sorted_ids.iter()
             .filter_map(|id| self.aircraft.get(*id).map(|ac| (*id, ac)))
             .map(|(id, ac)| {
-                (id.clone(), ac.initial_location.id.clone(), ac.disruptions.iter().map(|d| (d.from.to_minutes(), d.to.to_minutes())).collect())
-            }).collect::<Vec<(AircraftId, AirportId, Vec<(u16, u16)>)>>();
+                (id.clone(), ac.initial_location.id.clone(), ac.disruptions.iter().map(|d| (d.from, d.to)).collect())
+            }).collect::<Vec<(AircraftId, AirportId, Vec<(Time, Time)>)>>();
 
         self.flights.sort_by_key(|f| f.departure_time);
         self.flights.iter_mut().for_each(|flight| {
@@ -34,7 +35,7 @@ impl Schedule {
                 }) {
                     flight.aircraft_id = Some(id.clone());
                     *loc = flight.destination.id.clone();
-                    intervals.push((flight.departure_time, (flight.arrival_time + flight.destination.mtt).clamp(0, 60*24)))
+                    intervals.push((flight.departure_time, flight.arrival_time + flight.destination.mtt))
                 }
 
         });
@@ -189,7 +190,7 @@ mod tests {
         aircraft.insert(ac_id.clone(), Aircraft {
             id: ac_id.clone(),
             initial_location: Airport { id: id("KRK"), mtt: 30 },
-            disruptions: vec![Availability { from: 150u16.into(), to: 250u16.into() }],
+            disruptions: vec![Availability { from: 150, to: 250 }],
         });
 
         let flights = vec![
@@ -245,6 +246,42 @@ mod tests {
         assert_eq!(schedule.flights[0].aircraft_id, Some(ac_id.clone()));
         assert_eq!(schedule.flights[1].aircraft_id, Some(ac_id.clone()));
     }
+
+    #[test]
+    fn test_multiday_flight() {
+        let ac_id = id("PLANE_1");
+        let mut aircraft = HashMap::new();
+        aircraft.insert(ac_id.clone(), Aircraft {
+            id: ac_id.clone(),
+            initial_location: Airport { id: id("KRK"), mtt: 30 },
+            disruptions: vec![],
+        });
+
+        let flights = vec![
+            Flight {
+                id: id("FLIGHT_1"),
+                origin: Airport { id: id("KRK"), mtt: 30 },
+                destination: Airport { id: id("WAW"), mtt: 30 },
+                departure_time: 1200,
+                arrival_time: 1500,
+                aircraft_id: None
+            },
+            Flight {
+                id: id("FLIGHT_2"),
+                origin: Airport { id: id("KRK"), mtt: 30 },
+                destination: Airport { id: id("GDN"), mtt: 30 },
+                departure_time: 1100,
+                arrival_time: 1800,
+                aircraft_id: None
+            },
+        ];
+
+        let mut schedule = Schedule::new(aircraft, flights);
+        schedule.assign();
+
+        assert_eq!(schedule.flights[0].aircraft_id, Some(ac_id));
+        assert_eq!(schedule.flights[1].aircraft_id, None);
+    }
 }
 
 #[cfg(test)]
@@ -266,8 +303,8 @@ mod proptests {
             arb_id("FL"),
             arb_id("AP"),
             arb_id("AP"),
-            0..1300u16,
-            10..100u16,
+            0..2500u64,
+            10..1000u64,
         ).prop_map(|(id, org, dst, dep, dur)| Flight {
             id,
             origin: Airport { id: org, mtt: 30 },
@@ -280,7 +317,7 @@ mod proptests {
 
     proptest! {
         #[test]
-        fn test_no_overlaps_invariant(
+        fn test_time_and_location_invariants(
             aircraft_data in prop::collection::vec((arb_id("AC"), arb_id("AP")), 1..5),
             flights in prop::collection::vec(arb_flight(), 1..30)
         ) {
@@ -308,7 +345,7 @@ mod proptests {
                     let first = &pair[0];
                     let second = &pair[1];
 
-                    let ready_at = (first.arrival_time + 30).min(1440);
+                    let ready_at = first.arrival_time + 30;
 
                     prop_assert!(
                         second.departure_time >= ready_at,

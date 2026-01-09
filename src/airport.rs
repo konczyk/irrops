@@ -5,5 +5,5 @@ pub type AirportId = Arc<str>;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Airport {
     pub id: AirportId,
-    pub mtt: u16
+    pub mtt: u64
 }

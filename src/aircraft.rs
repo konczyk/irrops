@@ -1,25 +1,6 @@
 use std::sync::Arc;
 use crate::airport::Airport;
-
-pub struct Time {
-    hour: u16,
-    minute: u16,
-}
-
-impl Time {
-    pub fn to_minutes(&self) -> u16 {
-        self.hour * 60 + self.minute
-    }
-}
-
-impl From<u16> for Time {
-    fn from(value: u16) -> Self {
-        Self {
-            hour: value / 60,
-            minute: value % 60,
-        }
-    }
-}
+use crate::time::Time;
 
 pub struct Availability {
     pub from: Time,

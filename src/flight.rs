@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use crate::aircraft::AircraftId;
 use crate::airport::Airport;
+use crate::time::Time;
 
 pub type FlightId = Arc<str>;
 
@@ -10,6 +11,6 @@ pub struct Flight {
     pub aircraft_id: Option<AircraftId>,
     pub origin: Airport,
     pub destination: Airport,
-    pub departure_time: u16,
-    pub arrival_time: u16,
+    pub departure_time: Time,
+    pub arrival_time: Time,
 }
