@@ -246,3 +246,82 @@ mod tests {
         assert_eq!(schedule.flights[1].aircraft_id, Some(ac_id.clone()));
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+    use crate::airport::Airport;
+
+    fn arb_id(prefix: &'static str) -> impl Strategy<Value=Arc<str>> {
+        prop_oneof![
+            Just(Arc::from(format!("{}_1", prefix))),
+            Just(Arc::from(format!("{}_2", prefix))),
+            Just(Arc::from(format!("{}_3", prefix))),
+        ]
+    }
+
+    fn arb_flight() -> impl Strategy<Value = Flight> {
+        (
+            arb_id("FL"),
+            arb_id("AP"),
+            arb_id("AP"),
+            0..1300u16,
+            10..100u16,
+        ).prop_map(|(id, org, dst, dep, dur)| Flight {
+            id,
+            origin: Airport { id: org, mtt: 30 },
+            destination: Airport { id: dst, mtt: 30 },
+            departure_time: dep,
+            arrival_time: dep + dur,
+            aircraft_id: None,
+        })
+    }
+
+    proptest! {
+        #[test]
+        fn test_no_overlaps_invariant(
+            aircraft_data in prop::collection::vec((arb_id("AC"), arb_id("AP")), 1..5),
+            flights in prop::collection::vec(arb_flight(), 1..30)
+        ) {
+            let mut aircraft_map = HashMap::new();
+            for (ac_id, loc_id) in aircraft_data {
+                aircraft_map.insert(ac_id.clone(), Aircraft {
+                    id: ac_id,
+                    initial_location: Airport { id: loc_id, mtt: 30 },
+                    disruptions: vec![],
+                });
+            }
+
+            let mut schedule = Schedule::new(aircraft_map, flights);
+
+            schedule.assign();
+
+            for ac_id in schedule.aircraft.keys() {
+                // ...get all flights assigned to it, sorted by time.
+                let mut assigned: Vec<_> = schedule.flights.iter()
+                    .filter(|f| f.aircraft_id.as_ref() == Some(ac_id))
+                    .collect();
+
+                assigned.sort_by_key(|f| f.departure_time);
+
+                // Ensure every sequential pair obeys the MTT rule
+                for pair in assigned.windows(2) {
+                    let first = &pair[0];
+                    let second = &pair[1];
+
+                    let ready_at = (first.arrival_time + 30).min(1440);
+
+                    // prop_assert! is like assert!, but triggers the "Shrinker" on failure
+                    prop_assert!(
+                        second.departure_time >= ready_at,
+                        "\nOverlap on {}:\nFlight {} (ends {}+30m MTT) vs Flight {} (starts {})",
+                        ac_id, first.id, first.arrival_time, second.id, second.departure_time
+                    );
+                }
+            }
+        }
+    }
+
+
+}
