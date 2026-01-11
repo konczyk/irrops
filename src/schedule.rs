@@ -6,7 +6,6 @@ use crate::time::Time;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io;
-use std::sync::Arc;
 
 pub struct Schedule {
     aircraft: HashMap<AircraftId, Aircraft>,
@@ -89,58 +88,43 @@ impl Schedule {
             .filter(|flight| flight.status == Unscheduled)
             .for_each(|flight| {
                 // collect candidates at the origin airport that are not disrupted
-                let nondisrupted_aircraft: Vec<AircraftId> = locations.get(&flight.origin_id)
-                    .map(|ids| ids.iter().filter_map(|i| self.aircraft.get(i)))
-                    .map(|acs| acs.filter(|a| {
-                        a.disruptions.iter().all(|d| {
-                            !Time::is_overlapping(&(flight.departure_time, flight.arrival_time), &(d.from, d.to))
-                        })
-                    }))
-                    .map(|acs| acs.map(|x| x.id.clone()).collect())
-                    .unwrap_or(vec![]);
+                let chosen_aircraft = locations.get(&flight.origin_id)
+                    .and_then(|ac_ids| {
+                        ac_ids.iter()
+                            .filter_map(|ac_id| self.aircraft.get(ac_id))
+                            // filter aircraft at the origin airport that are not disrupted
+                            .filter(|a| a.disruptions.iter().all(|d| !Time::is_overlapping(&(flight.departure_time, flight.arrival_time), &(d.from, d.to))))
+                            // filter out busy ones
+                            .filter(|ac| {
+                                busy.get(&ac.id).map_or(true, |intervals| intervals.iter().all(|(from, to)| !Time::is_overlapping(&(flight.departure_time, flight.arrival_time), &(*from, *to))))
+                            })
+                            // filter out busy due to curfew
+                            .find(|_| {
+                                let origin_open = self.airports.get(&flight.origin_id)
+                                    .map_or(true, |ap| !ap.disruptions.iter().any(|d| d.0 <= flight.departure_time && d.1 >=flight.departure_time));
+                                let destination_open = self.airports.get(&flight.destination_id)
+                                    .map_or(true, |ap| !ap.disruptions.iter().any(|d| d.0 <= flight.arrival_time && d.1 >=flight.arrival_time));
+                                origin_open && destination_open
+                            })
+                    });
 
-                // filter out busy ones
-                let nonbusy_aircraft: Vec<AircraftId> = nondisrupted_aircraft.iter().filter(|ac_id| {
-                    busy.get(*ac_id).map(|intervals| intervals.iter().all(|(from, to)| {
-                        !Time::is_overlapping(&(flight.departure_time, flight.arrival_time), &(*from, *to))
-                    })).unwrap_or(true)
-                }).map(|acs| acs.clone()).collect();
-
-                // filter out busy due to curfew
-                let free_aircraft: Vec<AircraftId> = nonbusy_aircraft.iter().filter(|_| {
-                    let origin = self.airports.get(&flight.origin_id);
-                    let destination = self.airports.get(&flight.destination_id);
-                    let origin_disrupted = if let Some(orig) = origin {
-                        orig.disruptions.iter().any(|d| d.0 <= flight.departure_time && d.1 >=flight.departure_time )
-                    } else {
-                        false
-                    };
-                    let dest_disrupted = if let Some(dest) = destination {
-                        dest.disruptions.iter().any(|d| d.0 <= flight.arrival_time && d.1 >=flight.arrival_time )
-                    } else {
-                        false
-                    };
-                    !origin_disrupted && !dest_disrupted
-                }).map(|x| x.clone()).collect();
-
-
-                if let Some(aircraft_id) = free_aircraft.first() {
-                    flight.aircraft_id = Some(aircraft_id.clone());
+                if let Some(aircraft) = chosen_aircraft {
+                    flight.aircraft_id = Some(aircraft.id.clone());
                     flight.status = Scheduled;
                     let mtt = self.airports.get(&flight.destination_id).map(|ap| ap.mtt).unwrap_or(0);
-                    busy.entry(aircraft_id.clone())
+                    busy.entry(aircraft.id.clone())
                         .and_modify(|val| val.push((flight.departure_time, flight.arrival_time + mtt)))
                         .or_insert(vec![(flight.departure_time, flight.arrival_time + mtt)]);
                     locations
                         .entry(flight.destination_id.clone())
                         .and_modify(|val| {
-                            val.push(aircraft_id.clone());
+                            val.push(aircraft.id.clone());
                             val.sort();
                         })
-                        .or_insert(vec![aircraft_id.clone()]);
+                        .or_insert(vec![aircraft.id.clone()]);
                     locations
                         .entry(flight.origin_id.clone())
-                        .and_modify(|val| val.retain(|id| **id != *aircraft_id.clone()));
+                        .and_modify(|val| val.retain(|id| **id != *aircraft.id));
                 }
             })
     }
@@ -249,6 +233,7 @@ mod tests {
     use crate::aircraft::Availability;
     use crate::airport::Airport;
     use crate::flight::FlightStatus;
+    use std::sync::Arc;
 
     pub(crate) fn id(s: &str) -> Arc<str> { Arc::from(s) }
 
@@ -633,6 +618,7 @@ mod tests {
 #[cfg(test)]
 mod proptests {
     use super::tests::{add_aircraft, add_airport, id};
+    use std::sync::Arc;
     use super::*;
     use proptest::prelude::*;
 
