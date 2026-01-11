@@ -61,6 +61,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         schedule.assign();
                         println!("Recovery cycle complete.");
                     },
+                    "help" | "?" => {
+                        println!("\nAvailable Commands:");
+                        println!("  ls             - List all flights in a table");
+                        println!("  delay <id> <m> - Inject <m> minutes of delay into flight <id>");
+                        println!("  recover        - Re-run assignment to repair unscheduled flights");
+                        println!("  help / ?       - Show this help menu");
+                        println!("  exit / quit    - Exit the simulator\n");
+                    },
                     "exit" | "quit" => break,
                     _ => println!("Unknown command: {}", parts[0]),
                 }
