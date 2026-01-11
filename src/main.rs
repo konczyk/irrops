@@ -1,12 +1,11 @@
-use std::io;
-use std::io::Write;
+use crate::schedule::Schedule;
+use clap::Parser;
+use rustyline::completion::{Completer, Pair};
+use rustyline::error::ReadlineError;
+use rustyline::{Context, Editor, Helper, Highlighter, Hinter, Validator};
 use std::path::PathBuf;
 use std::sync::Arc;
-use clap::Parser;
-use rustyline::DefaultEditor;
-use rustyline::error::ReadlineError;
 use tabled::settings::Style;
-use crate::schedule::Schedule;
 
 mod aircraft;
 mod flight;
@@ -21,6 +20,30 @@ struct Args {
     scenario: PathBuf,
 }
 
+#[derive(Helper, Hinter, Highlighter, Validator)]
+pub struct CompleteHelper {
+    pub commands: Vec<String>,
+}
+
+impl Completer for CompleteHelper {
+    type Candidate = Pair;
+
+    fn complete(&self, line: &str, _pos: usize, _ctx: &Context<'_>) -> rustyline::Result<(usize, Vec<Pair>)> {
+        let mut candidates = Vec::new();
+
+        for cmd in &self.commands {
+            if cmd.starts_with(line) {
+                candidates.push(Pair {
+                    display: cmd.clone(),
+                    replacement: format!("{} ", cmd),
+                });
+            }
+        }
+
+        Ok((0, candidates))
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     println!("Tower online. Loaded flights from {}", args.scenario.display());
@@ -28,8 +51,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut schedule = Schedule::load_from_file(args.scenario.to_str().unwrap())?;
     schedule.assign();
 
-    let mut rl = DefaultEditor::new()?;
+    let config = rustyline::Config::builder()
+        .history_ignore_space(true)
+        .completion_type(rustyline::CompletionType::List)
+        .build();
 
+    let helper = CompleteHelper {
+        commands: vec![
+            "ls".to_string(),
+            "delay".to_string(),
+            "recover".to_string(),
+            "help".to_string(),
+            "exit".to_string(),
+        ],
+    };
+
+    let mut rl = Editor::with_config(config)?;
+    rl.set_helper(Some(helper));
 
     loop {
         let readline = rl.readline(">> ");
