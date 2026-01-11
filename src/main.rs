@@ -6,6 +6,9 @@ use rustyline::{Context, Editor, Helper, Highlighter, Hinter, Validator};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tabled::settings::Style;
+use crate::flight::Flight;
+use crate::flight::FlightStatus::{Delayed, Scheduled, Unscheduled};
+use crate::time::Time;
 
 mod aircraft;
 mod flight;
@@ -60,6 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands: vec![
             "ls".to_string(),
             "delay".to_string(),
+            "curfew".to_string(),
             "recover".to_string(),
             "help".to_string(),
             "exit".to_string(),
@@ -81,10 +85,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let parts: Vec<&str> = trimmed.split_whitespace().collect();
                 match parts[0] {
                     "ls" => {
-                        let mut table = tabled::Table::new(&schedule.flights);
-                        table.with(Style::rounded());
-                        table.with(tabled::settings::Alignment::left());
-                        println!("{}", table);
+                        let sub = parts.get(1).map(|s| *s).unwrap_or("a");
+                        let filtered_flights: Vec<&Flight> = schedule.flights.iter()
+                            .filter(|f| match sub {
+                                "u" | "unscheduled" => f.status == Unscheduled,
+                                "s" | "scheduled"   => f.status == Scheduled || f.status == Delayed,
+                                "d" | "delayed" => f.status == Delayed,
+                                _ => true, // 'ls' or 'ls a'
+                            })
+                            .collect();
+                        if filtered_flights.is_empty() {
+                            println!("No matching flights found.")
+                        } else {
+                            let mut table = tabled::Table::new(&filtered_flights);
+                            table.with(Style::rounded());
+                            table.with(tabled::settings::Alignment::left());
+                            println!("{}", table);
+                        }
                     },
                     "delay" => {
                         if let (Some(id), Some(mins)) = (parts.get(1), parts.get(2)) {
@@ -95,17 +112,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             println!("Usage: delay <flight_id> <minutes>");
                         }
                     },
+                    "curfew" => {
+                        if let (Some(id), Some(from), Some(to)) = (parts.get(1), parts.get(2), parts.get(3)) {
+                            let from_u64 = from.parse::<u64>().unwrap_or(0);
+                            let to_u64 = to.parse::<u64>().unwrap_or(0);
+                            let broken = schedule.apply_curfew(Arc::from(*id), Time(from_u64), Time(to_u64));
+                            println!("Applied airport curfew. {} flights became unscheduled.", broken.len());
+                        } else {
+                            println!("Usage: curfew <airport_id> <minutes> <minutes>");
+                        }
+                    },
                     "recover" => {
                         schedule.assign();
                         println!("Recovery cycle complete.");
                     },
                     "help" | "?" => {
                         println!("\nAvailable Commands:");
-                        println!("  ls             - List all flights in a table");
-                        println!("  delay <id> <m> - Inject <m> minutes of delay into flight <id>");
-                        println!("  recover        - Re-run assignment to repair unscheduled flights");
-                        println!("  help / ?       - Show this help menu");
-                        println!("  exit / quit    - Exit the simulator\n");
+                        println!("  ls [status]         - List all flights in a table or filter by status: u - unscheduled, s - scheduled, d - delayed");
+                        println!("  delay <id> <m>      - Inject <m> minutes of delay into flight <id>");
+                        println!("  curfew <id> <m> <m> - Inject a curfew from <m> to <m> minutes into airport <id>");
+                        println!("  recover             - Re-run assignment to repair unscheduled flights");
+                        println!("  help / ?            - Show this help menu");
+                        println!("  exit / quit         - Exit the simulator\n");
                     },
                     "exit" | "quit" => break,
                     _ => println!("Unknown command: {}", parts[0]),

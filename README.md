@@ -34,9 +34,11 @@ cargo run -- --scenario data/default.json
 
 Commands:
 
-- `ls` - list all flights and their current status
+- `ls [status]` - list (optionally filtered) flights and their current status
 - `delay <flight_id> <minutes>` - inject a delay into a flight
+- `curfew <airport_id> <minutes> <minutes>` - Inject a curfew into an airport
 - `recover` - re-run assignment to repair unscheduled flights
+- `help | ?` - display help
 - `exit` / `quit` - leave the simulator
 
 ## Sample TUI session

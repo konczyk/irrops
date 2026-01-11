@@ -1,8 +1,14 @@
-use std::ops::{Add, AddAssign, Sub};
 use serde::{Deserialize, Serialize};
+use std::ops::{Add, AddAssign, Sub};
 
 #[derive(Debug, Clone, Copy, Ord, Eq, PartialEq, Serialize, Deserialize, PartialOrd)]
 pub struct Time(pub u64);
+
+impl Time {
+    pub(crate) fn is_overlapping(time: &(Time, Time), window: &(Time, Time)) -> bool {
+        time.0 < window.1 && time.1 > window.0
+    }
+}
 
 impl std::fmt::Display for Time {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -12,6 +18,7 @@ impl std::fmt::Display for Time {
         let mins = remaining % 60;
         write!(f, "DAY{} {:02}:{:02}", days + 1, hours, mins)
     }
+
 }
 
 impl Add<u64> for Time {

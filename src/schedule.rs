@@ -1,25 +1,27 @@
 use crate::aircraft::{Aircraft, AircraftId};
-use crate::airport::AirportId;
+use crate::airport::{Airport, AirportId};
 use crate::flight::FlightStatus::{Delayed, Scheduled, Unscheduled};
 use crate::flight::{Flight, FlightId};
 use crate::time::Time;
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
-use serde::Deserialize;
 
 pub struct Schedule {
     aircraft: HashMap<AircraftId, Aircraft>,
-    pub(crate) flights: Vec<Flight>,
+    airports: HashMap<AirportId, Airport>,
+    pub flights: Vec<Flight>,
     flights_index: HashMap<FlightId, usize>
 }
 
 impl Schedule {
-    pub fn new(aircraft: HashMap<AircraftId, Aircraft>, mut flights: Vec<Flight>) -> Schedule {
+    pub fn new(aircraft: HashMap<AircraftId, Aircraft>, airports: HashMap<AirportId, Airport>, mut flights: Vec<Flight>) -> Schedule {
         flights.sort_by_key(|f| f.departure_time);
         let flights_index = flights.iter().enumerate().map(|(i, v)| (v.id.clone(), i)).collect::<HashMap<FlightId, usize>>();
         Schedule {
             aircraft,
+            airports,
             flights,
             flights_index
         }
@@ -30,6 +32,7 @@ impl Schedule {
         #[derive(Deserialize)]
         struct RawData {
             aircraft: Vec<Aircraft>,
+            airports: Vec<Airport>,
             flights: Vec<Flight>,
         }
         let raw: RawData = serde_json::from_str(&data)?;
@@ -38,59 +41,108 @@ impl Schedule {
             .map(|a| (a.id.clone(), a))
             .collect();
 
-        Ok(Schedule::new(ac_map, raw.flights))
+        let ap_map = raw.airports.into_iter()
+            .map(|a| (a.id.clone(), a))
+            .collect();
+
+        Ok(Schedule::new(ac_map, ap_map, raw.flights))
     }
 
     fn locate_aircraft(&self, aircraft_id: &AircraftId, default: AirportId) -> AirportId {
         self.flights.iter().rev()
             .filter(|f| f.status != Unscheduled && f.aircraft_id.as_ref().map(|id| **id == **aircraft_id).unwrap_or(false))
-            .map(|f| f.destination.id.clone())
+            .map(|f| f.destination_id.clone())
             .next()
             .unwrap_or(default)
     }
 
     pub fn assign(&mut self)  {
-        let mut disruptions: HashMap<Arc<str>, Vec<(Time, Time)>> = HashMap::new();
-        self.flights
-            .iter().map(|f| (f.aircraft_id.as_ref(), f.departure_time, f.arrival_time + f.destination.mtt))
-            .filter_map(|(maybe_id, dept, arr)| maybe_id.map(|id| (id.clone(), (dept, arr))))
-            .for_each(|(id, val)| {
-                disruptions.entry(id)
-                    .or_default()
-                    .push(val)
+        let mut sorted_ids = self.aircraft.keys().collect::<Vec<&AircraftId>>();
+        sorted_ids.sort();
+
+        // collect aircraft per airport, sorted by aircraft name
+        let mut locations = HashMap::<AirportId, Vec<AircraftId>>::new();
+        sorted_ids.iter()
+            .filter_map(|id| self.aircraft.get(*id))
+            .map(|ac| {
+                (self.locate_aircraft(&ac.id, self.airports.get(&ac.initial_location_id).map(|l| l.id.clone()).unwrap()), ac.id.clone())
+            })
+            .for_each(|(airport_id, aircraft_id)| {
+                locations.entry(airport_id)
+                    .and_modify(|value| value.push(aircraft_id.clone()))
+                    .or_insert(vec![aircraft_id.clone()]);
             });
 
-        let mut sorted_ids = self.aircraft.keys().collect::<Vec<&Arc<str>>>();
-        sorted_ids.sort();
-        let mut busy = sorted_ids.iter()
-            .filter_map(|id| self.aircraft.get(*id).map(|ac| (*id, ac)))
-            .map(|(id, ac)| {
-                let mut d = ac.disruptions.iter().map(|d| (d.from, d.to)).collect::<Vec<_>>();
-                if let Some(flights_d) = disruptions.get(id) {
-                    d.extend(flights_d);
-                }
-                (id.clone(), self.locate_aircraft(&id, ac.initial_location.id.clone()), d)
-            }).collect::<Vec<(AircraftId, AirportId, Vec<(Time, Time)>)>>();
+        // collect disruptions due to currently scheduled flights
+        let mut busy = HashMap::<AircraftId, Vec<(Time, Time)>>::new();
+        self.flights
+            .iter().map(|f| (f.aircraft_id.as_ref(), f.departure_time, f.arrival_time + self.airports.get(&f.destination_id).map(|d| d.mtt).unwrap()))
+            .filter_map(|(maybe_id, dep, arr)| maybe_id.map(|id| (id.clone(), (dep, arr))))
+            .for_each(|(id, val)| {
+                busy.entry(id)
+                    .and_modify(|intervals| intervals.push(val))
+                    .or_insert(vec![val]);
+            });
 
 
-        self.flights.sort_by_key(|f| f.departure_time);
         self.flights.iter_mut()
             .filter(|flight| flight.status == Unscheduled)
             .for_each(|flight| {
-            if let Some((id, loc, intervals)) = busy.iter_mut()
-                .filter(|(_, loc, _)| flight.origin.id == *loc)
-                .find(|(_, _, blocks)| {
-                    blocks.iter().all(|(from, to)| {
-                        flight.departure_time >= *to || flight.arrival_time <= *from
-                    })
-                }) {
-                    flight.aircraft_id = Some(id.clone());
-                    flight.status = Scheduled;
-                    *loc = flight.destination.id.clone();
-                    intervals.push((flight.departure_time, flight.arrival_time + flight.destination.mtt))
-                }
+                // collect candidates at the origin airport that are not disrupted
+                let nondisrupted_aircraft: Vec<AircraftId> = locations.get(&flight.origin_id)
+                    .map(|ids| ids.iter().filter_map(|i| self.aircraft.get(i)))
+                    .map(|acs| acs.filter(|a| {
+                        a.disruptions.iter().all(|d| {
+                            !Time::is_overlapping(&(flight.departure_time, flight.arrival_time), &(d.from, d.to))
+                        })
+                    }))
+                    .map(|acs| acs.map(|x| x.id.clone()).collect())
+                    .unwrap_or(vec![]);
 
-        });
+                // filter out busy ones
+                let nonbusy_aircraft: Vec<AircraftId> = nondisrupted_aircraft.iter().filter(|ac_id| {
+                    busy.get(*ac_id).map(|intervals| intervals.iter().all(|(from, to)| {
+                        !Time::is_overlapping(&(flight.departure_time, flight.arrival_time), &(*from, *to))
+                    })).unwrap_or(true)
+                }).map(|acs| acs.clone()).collect();
+
+                // filter out busy due to curfew
+                let free_aircraft: Vec<AircraftId> = nonbusy_aircraft.iter().filter(|_| {
+                    let origin = self.airports.get(&flight.origin_id);
+                    let destination = self.airports.get(&flight.destination_id);
+                    let origin_disrupted = if let Some(orig) = origin {
+                        orig.disruptions.iter().any(|d| d.0 <= flight.departure_time && d.1 >=flight.departure_time )
+                    } else {
+                        false
+                    };
+                    let dest_disrupted = if let Some(dest) = destination {
+                        dest.disruptions.iter().any(|d| d.0 <= flight.arrival_time && d.1 >=flight.arrival_time )
+                    } else {
+                        false
+                    };
+                    !origin_disrupted && !dest_disrupted
+                }).map(|x| x.clone()).collect();
+
+
+                if let Some(aircraft_id) = free_aircraft.first() {
+                    flight.aircraft_id = Some(aircraft_id.clone());
+                    flight.status = Scheduled;
+                    let mtt = self.airports.get(&flight.destination_id).map(|ap| ap.mtt).unwrap_or(0);
+                    busy.entry(aircraft_id.clone())
+                        .and_modify(|val| val.push((flight.departure_time, flight.arrival_time + mtt)))
+                        .or_insert(vec![(flight.departure_time, flight.arrival_time + mtt)]);
+                    locations
+                        .entry(flight.destination_id.clone())
+                        .and_modify(|val| {
+                            val.push(aircraft_id.clone());
+                            val.sort();
+                        })
+                        .or_insert(vec![aircraft_id.clone()]);
+                    locations
+                        .entry(flight.origin_id.clone())
+                        .and_modify(|val| val.retain(|id| **id != *aircraft_id.clone()));
+                }
+            })
     }
 
     pub fn apply_delay(&mut self, flight_id: FlightId, shift: u64) -> Vec<FlightId> {
@@ -106,7 +158,7 @@ impl Schedule {
             let disruptions = aid.as_ref().and_then(|i| self.aircraft.get(i)).map(|a| a.disruptions.as_slice()).unwrap_or(&empty_vec);
 
             let is_disrupted = |dep_time: Time, arr_time: Time| -> bool {
-                disruptions.iter().any(|d| dep_time < d.to && arr_time > d.from)
+                disruptions.iter().any(|d| Time::is_overlapping(&(dep_time, arr_time), &(d.from, d.to)))
             };
 
             let mut mark_unscheduled = |flight: &mut Flight| {
@@ -131,9 +183,9 @@ impl Schedule {
                 for flight in self.flights.iter_mut().skip(*f_id + 1).filter(|f| f.aircraft_id.as_ref().map(|x| **x == *ac_id).unwrap_or(false)) {
                     if is_broken {
                         mark_unscheduled(flight);
-                    } else if flight.departure_time < prev_arrival_time + flight.origin.mtt {
+                    } else if flight.departure_time < prev_arrival_time + self.airports.get(&flight.origin_id).map(|d| d.mtt).unwrap() {
                         let len = flight.arrival_time - flight.departure_time;
-                        let dep_time = prev_arrival_time + flight.origin.mtt;
+                        let dep_time = prev_arrival_time + self.airports.get(&flight.origin_id).map(|d| d.mtt).unwrap();
                         let arr_time = dep_time + len;
                         flight.arrival_time = flight.departure_time + len;
                         if is_disrupted(dep_time, arr_time) {
@@ -153,6 +205,42 @@ impl Schedule {
         }
         unscheduled
     }
+
+    pub fn apply_curfew(&mut self, airport_id: AirportId, from: Time, to: Time) -> Vec<FlightId> {
+        let mut unscheduled = vec![];
+
+        let maybe_airport = self.airports.get_mut(&airport_id);
+        if let Some(airport) = maybe_airport {
+            airport.disruptions.push((from, to));
+
+            let broken = self.flights.iter()
+                .filter(|f| f.status != Unscheduled)
+                .filter(|f| *f.origin_id == *airport_id || *f.destination_id == *airport_id)
+                .filter(|f| airport.disruptions.iter().any(|(from, to)| Time::is_overlapping(&(f.departure_time, f.arrival_time), &(*from, *to))))
+                .fold(HashMap::new(), |mut acc: HashMap<AircraftId, Time>, f| {
+                    if let Some(ac_id) = f.aircraft_id.clone() {
+                        acc.entry(ac_id)
+                            .or_insert(f.departure_time);
+                    }
+                    acc
+                });
+
+            self.flights.iter_mut().filter(|f| f.status != Unscheduled).for_each(|f| {
+                if let Some(ac_id) = &f.aircraft_id {
+                    let broken_time = broken.get(ac_id);
+                    if let Some(time) = broken_time {
+                        if f.departure_time >= *time {
+                            f.aircraft_id = None;
+                            f.status = Unscheduled;
+                            unscheduled.push(f.id.clone());
+                        }
+                    }
+                }
+            })
+        }
+
+        unscheduled
+    }
 }
 
 #[cfg(test)]
@@ -160,172 +248,147 @@ mod tests {
     use super::*;
     use crate::aircraft::Availability;
     use crate::airport::Airport;
+    use crate::flight::FlightStatus;
 
-    fn id(s: &str) -> Arc<str> { Arc::from(s) }
+    pub(crate) fn id(s: &str) -> Arc<str> { Arc::from(s) }
+
+    pub(crate) fn add_aircraft(aircraft: &mut HashMap<AircraftId, Aircraft>, aircraft_id: &str, initial_location_id: &str, disruptions: Vec<Availability>) {
+        aircraft.insert(id(aircraft_id).clone(), Aircraft {
+            id: id(aircraft_id).clone(),
+            initial_location_id: id(initial_location_id).clone(),
+            disruptions,
+        });
+    }
+
+    pub(crate) fn add_airport(airports: &mut HashMap<AirportId, Airport>, airport_id: &str, mtt: u64, disruptions: Vec<(Time, Time)>) {
+        airports.insert(id(airport_id).clone(), Airport {
+            id: id(airport_id).clone(),
+            mtt,
+            disruptions,
+        });
+    }
+
+    fn add_flight(flights: &mut Vec<Flight>, flight_id: &str, origin_id: &str, destination_id: &str, departure_time: u64, arrival_time: u64, aircraft_id: Option<&str>, status: FlightStatus) {
+        flights.push(
+            Flight {
+                id: id(flight_id),
+                origin_id: id(origin_id),
+                destination_id: id(destination_id),
+                departure_time: Time(departure_time),
+                arrival_time: Time(arrival_time),
+                aircraft_id: aircraft_id.map(|x| id(x)),
+                status,
+            }
+        );
+    }
+
+    fn availability(from: u64, to: u64) -> Availability {
+        Availability {
+            from: Time(from),
+            to: Time(to),
+        }
+    }
 
     #[test]
     fn test_location_consistency() {
-        let ac_id = id("PLANE_1");
         let mut aircraft = HashMap::new();
-        aircraft.insert(ac_id.clone(), Aircraft {
-            id: ac_id.clone(),
-            initial_location: Airport { id: id("KRK"), mtt: 30 },
-            disruptions: vec![],
-        });
+        let mut airports = HashMap::new();
+        let mut flights = Vec::new();
 
-        let flights = vec![
-            Flight {
-                id: id("FLIGHT_1"),
-                origin: Airport { id: id("KRK"), mtt: 30 },
-                destination: Airport { id: id("WAW"), mtt: 30 },
-                departure_time: Time(100),
-                arrival_time: Time(200),
-                aircraft_id: None,
-                status: Unscheduled,
-            },
-            Flight {
-                id: id("FLIGHT_2"),
-                origin: Airport { id: id("KRK"), mtt: 30 },
-                destination: Airport { id: id("GDN"), mtt: 30 },
-                departure_time: Time(300),
-                arrival_time: Time(400),
-                aircraft_id: None,
-                status: Unscheduled,
-            },
-        ];
+        add_airport(&mut airports, "KRK", 30, vec![]);
+        add_airport(&mut airports, "WAW", 30, vec![]);
+        add_airport(&mut airports, "GDN", 30, vec![]);
 
-        let mut schedule = Schedule::new(aircraft, flights);
+        add_aircraft(&mut aircraft, "PLANE_1", "KRK", vec![]);
+
+        add_flight(&mut flights, "FLIGHT_1", "KRK", "WAW", 100, 200, None, Unscheduled);
+        add_flight(&mut flights, "FLIGHT_2", "KRK", "GDN", 300, 400, None, Unscheduled);
+
+        let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
 
-        assert_eq!(schedule.flights[0].aircraft_id, Some(ac_id));
+        assert_eq!(schedule.flights[0].aircraft_id, Some(id("PLANE_1")));
         assert_eq!(schedule.flights[1].aircraft_id, None);
     }
 
     #[test]
     fn test_mtt_conflict() {
-        let ac_id = id("PLANE_1");
         let mut aircraft = HashMap::new();
-        aircraft.insert(ac_id.clone(), Aircraft {
-            id: ac_id.clone(),
-            initial_location: Airport { id: id("KRK"), mtt: 30 },
-            disruptions: vec![],
-        });
+        let mut airports = HashMap::new();
+        let mut flights = Vec::new();
 
-        let flights = vec![
-            Flight {
-                id: id("FLIGHT_1"),
-                origin: Airport { id: id("KRK"), mtt: 30 },
-                destination: Airport { id: id("WAW"), mtt: 30 },
-                departure_time: Time(100),
-                arrival_time: Time(200),
-                aircraft_id: None,
-                status: Unscheduled,
-            },
-            Flight {
-                id: id("FLIGHT_2"),
-                origin: Airport { id: id("WAW"), mtt: 30 },
-                destination: Airport { id: id("GDN"), mtt: 30 },
-                departure_time: Time(220),
-                arrival_time: Time(300),
-                aircraft_id: None,
-                status: Unscheduled,
-            },
-        ];
+        add_airport(&mut airports, "KRK", 30, vec![]);
+        add_airport(&mut airports, "WAW", 30, vec![]);
+        add_airport(&mut airports, "GDN", 30, vec![]);
 
-        let mut schedule = Schedule::new(aircraft, flights);
+        add_aircraft(&mut aircraft, "PLANE_1", "KRK", vec![]);
+
+        add_flight(&mut flights, "FLIGHT_1", "KRK", "WAW", 100, 200, None, Unscheduled);
+        add_flight(&mut flights, "FLIGHT_2", "WAW", "GDN", 220, 300, None, Unscheduled);
+
+        let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
 
-        assert_eq!(schedule.flights[0].aircraft_id, Some(ac_id));
+        assert_eq!(schedule.flights[0].aircraft_id, Some(id("PLANE_1")));
         assert_eq!(schedule.flights[1].aircraft_id, None);
     }
 
     #[test]
     fn test_continuity_schedule() {
-        let ac_id = id("PLANE_1");
         let mut aircraft = HashMap::new();
-        aircraft.insert(ac_id.clone(), Aircraft {
-            id: ac_id.clone(),
-            initial_location: Airport { id: id("KRK"), mtt: 30 },
-            disruptions: vec![],
-        });
+        let mut airports = HashMap::new();
+        let mut flights = Vec::new();
 
-        let flights = vec![
-            Flight {
-                id: id("FLIGHT_1"),
-                origin: Airport { id: id("KRK"), mtt: 30 },
-                destination: Airport { id: id("WAW"), mtt: 30 },
-                departure_time: Time(100),
-                arrival_time: Time(200),
-                aircraft_id: None,
-                status: Unscheduled,
-            },
-            Flight {
-                id: id("FLIGHT_2"),
-                origin: Airport { id: id("WAW"), mtt: 30 },
-                destination: Airport { id: id("GDN"), mtt: 30 },
-                departure_time: Time(240),
-                arrival_time: Time(300),
-                aircraft_id: None,
-                status: Unscheduled,
-            },
-        ];
+        add_airport(&mut airports, "KRK", 30, vec![]);
+        add_airport(&mut airports, "WAW", 30, vec![]);
+        add_airport(&mut airports, "GDN", 30, vec![]);
 
-        let mut schedule = Schedule::new(aircraft, flights);
+        add_aircraft(&mut aircraft, "PLANE_1", "KRK", vec![]);
+
+        add_flight(&mut flights, "FLIGHT_1", "KRK", "WAW", 100, 200, None, Unscheduled);
+        add_flight(&mut flights, "FLIGHT_2", "WAW", "GDN", 240, 300, None, Unscheduled);
+
+        let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
 
-        assert_eq!(schedule.flights[0].aircraft_id, Some(ac_id.clone()));
-        assert_eq!(schedule.flights[1].aircraft_id, Some(ac_id.clone()));
+        assert_eq!(schedule.flights[0].aircraft_id, Some(id("PLANE_1")));
+        assert_eq!(schedule.flights[1].aircraft_id, Some(id("PLANE_1")));
     }
-    
+
     #[test]
     fn test_determinism() {
-        let ac_a = id("A");
-        let ac_b = id("B");
         let mut aircraft = HashMap::new();
-        let airport = Airport { id: id("GDN"), mtt: 30 };
-    
-        aircraft.insert(ac_a.clone(), Aircraft { id: ac_a.clone(), initial_location: airport.clone(), disruptions: vec![] });
-        aircraft.insert(ac_b.clone(), Aircraft { id: ac_b.clone(), initial_location: airport.clone(), disruptions: vec![] });
-    
-        let flights = vec![Flight {
-            id: id("FLIGHT_1"),
-            origin: airport.clone(), 
-            destination: Airport { id: id("WAW"), mtt: 30 },
-            departure_time: Time(100),
-            arrival_time: Time(200),
-            aircraft_id: None,
-            status: Unscheduled,
-        }];
-    
-        let mut schedule = Schedule::new(aircraft, flights);
+        let mut airports = HashMap::new();
+        let mut flights = Vec::new();
+
+        add_airport(&mut airports, "GDN", 30, vec![]);
+        add_airport(&mut airports, "WAW", 30, vec![]);
+
+        add_aircraft(&mut aircraft, "A", "GDN", vec![]);
+        add_aircraft(&mut aircraft, "B", "GDN", vec![]);
+
+        add_flight(&mut flights, "FLIGHT_1", "GDN", "WAW", 100, 200, None, Unscheduled);
+
+        let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
-    
-        assert_eq!(schedule.flights[0].aircraft_id, Some(ac_a));
+
+        assert_eq!(schedule.flights[0].aircraft_id, Some(id("A")));
     }
 
     #[test]
     fn test_disruption() {
-        let ac_id = id("PLANE_1");
         let mut aircraft = HashMap::new();
-        aircraft.insert(ac_id.clone(), Aircraft {
-            id: ac_id.clone(),
-            initial_location: Airport { id: id("KRK"), mtt: 30 },
-            disruptions: vec![Availability { from: Time(150), to: Time(250) }],
-        });
+        let mut airports = HashMap::new();
+        let mut flights = Vec::new();
 
-        let flights = vec![
-            Flight {
-                id: id("FLIGHT_1"),
-                origin: Airport { id: id("KRK"), mtt: 30 },
-                destination: Airport { id: id("WAW"), mtt: 30 },
-                departure_time: Time(100),
-                arrival_time: Time(200),
-                aircraft_id: None,
-                status: Unscheduled,
-            },
-        ];
+        add_airport(&mut airports, "KRK", 30, vec![]);
+        add_airport(&mut airports, "WAW", 30, vec![]);
 
-        let mut schedule = Schedule::new(aircraft, flights);
+        add_aircraft(&mut aircraft, "PLANE_1", "KRK", vec![availability(150, 250)]);
+
+        add_flight(&mut flights, "FLIGHT_1", "KRK", "WAW", 100, 200, None, Unscheduled);
+
+        let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
 
         assert_eq!(schedule.flights[0].aircraft_id, None);
@@ -334,136 +397,68 @@ mod tests {
 
     #[test]
     fn test_perfect_fit_mtt() {
-        let ac_id = id("PLANE_1");
         let mut aircraft = HashMap::new();
-        aircraft.insert(ac_id.clone(), Aircraft {
-            id: ac_id.clone(),
-            initial_location: Airport { id: id("KRK"), mtt: 30 },
-            disruptions: vec![],
-        });
+        let mut airports = HashMap::new();
+        let mut flights = Vec::new();
 
-        let flights = vec![
-            Flight {
-                id: id("FLIGHT_1"),
-                origin: Airport { id: id("KRK"), mtt: 30 },
-                destination: Airport { id: id("WAW"), mtt: 30 },
-                departure_time: Time(100),
-                arrival_time: Time(200),
-                aircraft_id: None,
-                status: Unscheduled,
-            },
-            Flight {
-                id: id("FLIGHT_2"),
-                origin: Airport { id: id("WAW"), mtt: 30 },
-                destination: Airport { id: id("GDN"), mtt: 30 },
-                departure_time: Time(230),
-                arrival_time: Time(300),
-                aircraft_id: None,
-                status: Unscheduled,
-            },
-        ];
+        add_airport(&mut airports, "KRK", 30, vec![]);
+        add_airport(&mut airports, "WAW", 30, vec![]);
+        add_airport(&mut airports, "GDN", 30, vec![]);
 
-        let mut schedule = Schedule::new(aircraft, flights);
+        add_aircraft(&mut aircraft, "PLANE_1", "KRK", vec![]);
+
+        add_flight(&mut flights, "FLIGHT_1", "KRK", "WAW", 100, 200, None, Unscheduled);
+        add_flight(&mut flights, "FLIGHT_1", "WAW", "GDN", 230, 300, None, Unscheduled);
+
+        let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
 
-        assert_eq!(schedule.flights[0].aircraft_id, Some(ac_id.clone()));
-        assert_eq!(schedule.flights[1].aircraft_id, Some(ac_id.clone()));
+        assert_eq!(schedule.flights[0].aircraft_id, Some(id("PLANE_1")));
+        assert_eq!(schedule.flights[1].aircraft_id, Some(id("PLANE_1")));
     }
 
     #[test]
     fn test_multiday_flight() {
-        let ac_id = id("PLANE_1");
         let mut aircraft = HashMap::new();
-        aircraft.insert(ac_id.clone(), Aircraft {
-            id: ac_id.clone(),
-            initial_location: Airport { id: id("KRK"), mtt: 30 },
-            disruptions: vec![],
-        });
+        let mut airports = HashMap::new();
+        let mut flights = Vec::new();
 
-        let flights = vec![
-            Flight {
-                id: id("FLIGHT_1"),
-                origin: Airport { id: id("KRK"), mtt: 30 },
-                destination: Airport { id: id("WAW"), mtt: 30 },
-                departure_time: Time(1200),
-                arrival_time: Time(1500),
-                aircraft_id: None,
-                status: Unscheduled,
-            },
-            Flight {
-                id: id("FLIGHT_2"),
-                origin: Airport { id: id("KRK"), mtt: 30 },
-                destination: Airport { id: id("GDN"), mtt: 30 },
-                departure_time: Time(1100),
-                arrival_time: Time(1800),
-                aircraft_id: None,
-                status: Unscheduled,
-            },
-        ];
+        add_airport(&mut airports, "KRK", 30, vec![]);
+        add_airport(&mut airports, "WAW", 30, vec![]);
+        add_airport(&mut airports, "GDN", 30, vec![]);
 
-        let mut schedule = Schedule::new(aircraft, flights);
+        add_aircraft(&mut aircraft, "PLANE_1", "KRK", vec![]);
+
+        add_flight(&mut flights, "FLIGHT_1", "KRK", "WAW", 1200, 1500, None, Unscheduled);
+        add_flight(&mut flights, "FLIGHT_1", "KRK", "GDN", 1100, 1800, None, Unscheduled);
+
+        let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
 
-        assert_eq!(schedule.flights[0].aircraft_id, Some(ac_id));
+        assert_eq!(schedule.flights[0].aircraft_id, Some(id("PLANE_1")));
         assert_eq!(schedule.flights[1].aircraft_id, None);
     }
 
     #[test]
     fn test_delay_full_absorption() {
-        let ac_id1 = id("PLANE_1");
-        let ac_id2 = id("PLANE_2");
         let mut aircraft = HashMap::new();
-        aircraft.insert(ac_id1.clone(), Aircraft {
-            id: ac_id1.clone(),
-            initial_location: Airport { id: id("KRK"), mtt: 30 },
-            disruptions: vec![],
-        });
-        aircraft.insert(ac_id2.clone(), Aircraft {
-            id: ac_id2.clone(),
-            initial_location: Airport { id: id("WAW"), mtt: 30 },
-            disruptions: vec![],
-        });
+        let mut airports = HashMap::new();
+        let mut flights = Vec::new();
 
-        let flights = vec![
-            Flight {
-                id: id("FLIGHT_1"),
-                origin: Airport { id: id("KRK"), mtt: 30 },
-                destination: Airport { id: id("WRO"), mtt: 30 },
-                departure_time: Time(1200),
-                arrival_time: Time(1500),
-                aircraft_id: Some(ac_id1.clone()),
-                status: Scheduled,
-            },
-            Flight {
-                id: id("FLIGHT_2"),
-                origin: Airport { id: id("WRO"), mtt: 30 },
-                destination: Airport { id: id("WAW"), mtt: 30 },
-                departure_time: Time(1800),
-                arrival_time: Time(2000),
-                aircraft_id: Some(ac_id1.clone()),
-                status: Scheduled,
-            },
-            Flight {
-                id: id("FLIGHT_3"),
-                origin: Airport { id: id("WAW"), mtt: 30 },
-                destination: Airport { id: id("GDN"), mtt: 30 },
-                departure_time: Time(2100),
-                arrival_time: Time(2350),
-                aircraft_id: Some(ac_id1.clone()),
-                status: Scheduled,
-            },
-            Flight {
-                id: id("FLIGHT_4"),
-                origin: Airport { id: id("WAW"), mtt: 30 },
-                destination: Airport { id: id("GDN"), mtt: 30 },
-                departure_time: Time(2100),
-                arrival_time: Time(2300),
-                aircraft_id: Some(ac_id2),
-                status: Scheduled,
-            },
-        ];
+        add_airport(&mut airports, "KRK", 30, vec![]);
+        add_airport(&mut airports, "WAW", 30, vec![]);
+        add_airport(&mut airports, "GDN", 30, vec![]);
+        add_airport(&mut airports, "WRO", 30, vec![]);
 
-        let mut schedule = Schedule::new(aircraft, flights);
+        add_aircraft(&mut aircraft, "PLANE_1", "KRK", vec![]);
+        add_aircraft(&mut aircraft, "PLANE_2", "WAW", vec![]);
+
+        add_flight(&mut flights, "FLIGHT_1", "KRK", "WRO", 1200, 1500, None, Unscheduled);
+        add_flight(&mut flights, "FLIGHT_2", "WRO", "WAW", 1800, 2000, None, Unscheduled);
+        add_flight(&mut flights, "FLIGHT_3", "WAW", "GDN", 2100, 2350, None, Unscheduled);
+        add_flight(&mut flights, "FLIGHT_4", "WAW", "GDN", 2100, 2300, None, Unscheduled);
+
+        let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
         schedule.apply_delay(id("FLIGHT_1"), 500);
 
@@ -481,46 +476,23 @@ mod tests {
     }
 
     #[test]
-    fn test_delay_with_initial_disruption() {
-        let ac_id1 = id("PLANE_1");
+    fn test_delay_aircraft_first_flight() {
         let mut aircraft = HashMap::new();
-        aircraft.insert(ac_id1.clone(), Aircraft {
-            id: ac_id1.clone(),
-            initial_location: Airport { id: id("KRK"), mtt: 30 },
-            disruptions: vec![Availability { from: Time(1800), to: Time(1900) }],
-        });
+        let mut airports = HashMap::new();
+        let mut flights = Vec::new();
 
-        let flights = vec![
-            Flight {
-                id: id("FLIGHT_1"),
-                origin: Airport { id: id("KRK"), mtt: 30 },
-                destination: Airport { id: id("WRO"), mtt: 30 },
-                departure_time: Time(1200),
-                arrival_time: Time(1500),
-                aircraft_id: Some(ac_id1.clone()),
-                status: Scheduled,
-            },
-            Flight {
-                id: id("FLIGHT_2"),
-                origin: Airport { id: id("WRO"), mtt: 30 },
-                destination: Airport { id: id("WAW"), mtt: 30 },
-                departure_time: Time(1800),
-                arrival_time: Time(2000),
-                aircraft_id: Some(ac_id1.clone()),
-                status: Scheduled,
-            },
-            Flight {
-                id: id("FLIGHT_3"),
-                origin: Airport { id: id("WAW"), mtt: 30 },
-                destination: Airport { id: id("GDN"), mtt: 30 },
-                departure_time: Time(2100),
-                arrival_time: Time(2350),
-                aircraft_id: Some(ac_id1.clone()),
-                status: Scheduled,
-            },
-        ];
+        add_airport(&mut airports, "KRK", 30, vec![]);
+        add_airport(&mut airports, "WAW", 30, vec![]);
+        add_airport(&mut airports, "GDN", 30, vec![]);
+        add_airport(&mut airports, "WRO", 30, vec![]);
 
-        let mut schedule = Schedule::new(aircraft, flights);
+        add_aircraft(&mut aircraft, "PLANE_1", "KRK", vec![availability(1800, 1900)]);
+
+        add_flight(&mut flights, "FLIGHT_1", "KRK", "WRO", 1200, 1500, Some("PLANE_1"), Scheduled);
+        add_flight(&mut flights, "FLIGHT_2", "WRO", "WAW", 1800, 2000, Some("PLANE_1"), Scheduled);
+        add_flight(&mut flights, "FLIGHT_3", "WAW", "GDN", 2100, 2350, Some("PLANE_1"), Scheduled);
+
+        let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
         let broken = schedule.apply_delay(id("FLIGHT_1"), 500);
         assert_eq!(vec![id("FLIGHT_1"), id("FLIGHT_2"), id("FLIGHT_3")], broken);
@@ -539,46 +511,23 @@ mod tests {
     }
 
     #[test]
-    fn test_delay_with_subsequent_disruption() {
-        let ac_id1 = id("PLANE_1");
+    fn test_delay_aircraft_subsequent_flight() {
         let mut aircraft = HashMap::new();
-        aircraft.insert(ac_id1.clone(), Aircraft {
-            id: ac_id1.clone(),
-            initial_location: Airport { id: id("KRK"), mtt: 30 },
-            disruptions: vec![Availability { from: Time(2100), to: Time(2200) }],
-        });
+        let mut airports = HashMap::new();
+        let mut flights = Vec::new();
 
-        let flights = vec![
-            Flight {
-                id: id("FLIGHT_1"),
-                origin: Airport { id: id("KRK"), mtt: 30 },
-                destination: Airport { id: id("WRO"), mtt: 30 },
-                departure_time: Time(1200),
-                arrival_time: Time(1500),
-                aircraft_id: Some(ac_id1.clone()),
-                status: Scheduled,
-            },
-            Flight {
-                id: id("FLIGHT_2"),
-                origin: Airport { id: id("WRO"), mtt: 30 },
-                destination: Airport { id: id("WAW"), mtt: 30 },
-                departure_time: Time(1800),
-                arrival_time: Time(2000),
-                aircraft_id: Some(ac_id1.clone()),
-                status: Scheduled,
-            },
-            Flight {
-                id: id("FLIGHT_3"),
-                origin: Airport { id: id("WAW"), mtt: 30 },
-                destination: Airport { id: id("GDN"), mtt: 30 },
-                departure_time: Time(2100),
-                arrival_time: Time(2350),
-                aircraft_id: Some(ac_id1.clone()),
-                status: Scheduled,
-            },
-        ];
+        add_airport(&mut airports, "KRK", 30, vec![]);
+        add_airport(&mut airports, "WAW", 30, vec![]);
+        add_airport(&mut airports, "GDN", 30, vec![]);
+        add_airport(&mut airports, "WRO", 30, vec![]);
 
-        let mut schedule = Schedule::new(aircraft, flights);
+        add_aircraft(&mut aircraft, "PLANE_1", "KRK", vec![availability(2100, 2200)]);
+
+        add_flight(&mut flights, "FLIGHT_1", "KRK", "WRO", 1200, 1500, Some("PLANE_1"), Scheduled);
+        add_flight(&mut flights, "FLIGHT_2", "WRO", "WAW", 1800, 2000, Some("PLANE_1"), Scheduled);
+        add_flight(&mut flights, "FLIGHT_3", "WAW", "GDN", 2100, 2350, Some("PLANE_1"), Scheduled);
+
+        let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
         let broken = schedule.apply_delay(id("FLIGHT_1"), 500);
         assert_eq!(vec![id("FLIGHT_2"), id("FLIGHT_3")], broken);
@@ -597,43 +546,22 @@ mod tests {
     }
 
     #[test]
-    fn test_reassignment_after_disruption() {
-        let ac_id1 = id("PLANE_1");
-        let ac_id2 = id("PLANE_2");
+    fn test_recovery_after_disruption() {
         let mut aircraft = HashMap::new();
-        aircraft.insert(ac_id1.clone(), Aircraft {
-            id: ac_id1.clone(),
-            initial_location: Airport { id: id("KRK"), mtt: 30 },
-            disruptions: vec![Availability { from: Time(600), to: Time(800) }],
-        });
-        aircraft.insert(ac_id2.clone(), Aircraft {
-            id: ac_id2.clone(),
-            initial_location: Airport { id: id("KRK"), mtt: 30 },
-            disruptions: vec![],
-        });
+        let mut airports = HashMap::new();
+        let mut flights = Vec::new();
 
-        let flights = vec![
-            Flight {
-                id: id("FLIGHT_1"),
-                origin: Airport { id: id("KRK"), mtt: 30 },
-                destination: Airport { id: id("WRO"), mtt: 30 },
-                departure_time: Time(200),
-                arrival_time: Time(500),
-                aircraft_id: Some(ac_id1.clone()),
-                status: Scheduled,
-            },
-            Flight {
-                id: id("FLIGHT_2"),
-                origin: Airport { id: id("KRK"), mtt: 30 },
-                destination: Airport { id: id("WAW"), mtt: 30 },
-                departure_time: Time(1800),
-                arrival_time: Time(2000),
-                aircraft_id: Some(ac_id1.clone()),
-                status: Scheduled,
-            },
-        ];
+        add_airport(&mut airports, "KRK", 30, vec![]);
+        add_airport(&mut airports, "WAW", 30, vec![]);
+        add_airport(&mut airports, "WRO", 30, vec![]);
 
-        let mut schedule = Schedule::new(aircraft, flights);
+        add_aircraft(&mut aircraft, "PLANE_1", "KRK", vec![availability(600, 800)]);
+        add_aircraft(&mut aircraft, "PLANE_2", "KRK", vec![]);
+
+        add_flight(&mut flights, "FLIGHT_1", "KRK", "WRO", 200, 500, Some("PLANE_1"), Scheduled);
+        add_flight(&mut flights, "FLIGHT_2", "KRK", "WAW", 1800, 2000, Some("PLANE_1"), Scheduled);
+
+        let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
         schedule.apply_delay(id("FLIGHT_1"), 400);
 
@@ -659,12 +587,53 @@ mod tests {
         assert_eq!(Time(2000), schedule.flights[1].arrival_time);
         assert_eq!(Scheduled, schedule.flights[1].status);
     }
+
+    #[test]
+    fn test_curfew_chain_reaction() {
+        let mut aircraft = HashMap::new();
+        let mut airports = HashMap::new();
+        let mut flights = Vec::new();
+
+        add_airport(&mut airports, "KRK", 30, vec![]);
+        add_airport(&mut airports, "WAW", 30, vec![]);
+        add_airport(&mut airports, "WRO", 30, vec![]);
+
+        add_aircraft(&mut aircraft, "PLANE_1", "KRK", vec![]);
+
+        add_flight(&mut flights, "FLIGHT_1", "KRK", "WRO", 200, 300, Some("PLANE_1"), Scheduled);
+        add_flight(&mut flights, "FLIGHT_2", "WRO", "WAW", 400, 500, Some("PLANE_1"), Scheduled);
+        add_flight(&mut flights, "FLIGHT_3", "WAW", "KRK", 600, 700, Some("PLANE_1"), Scheduled);
+
+        let mut schedule = Schedule::new(aircraft, airports, flights);
+        schedule.apply_curfew(id("WAW"), Time(450), Time(550));
+
+        assert_eq!(Some(id("PLANE_1")), schedule.flights[0].aircraft_id);
+        assert_eq!(Time(200), schedule.flights[0].departure_time);
+        assert_eq!(Time(300), schedule.flights[0].arrival_time);
+        assert_eq!(Scheduled, schedule.flights[0].status);
+
+        assert_eq!(None, schedule.flights[1].aircraft_id);
+        assert_eq!(Time(400), schedule.flights[1].departure_time);
+        assert_eq!(Time(500), schedule.flights[1].arrival_time);
+        assert_eq!(Unscheduled, schedule.flights[1].status);
+
+        assert_eq!(None, schedule.flights[2].aircraft_id);
+        assert_eq!(Time(600), schedule.flights[2].departure_time);
+        assert_eq!(Time(700), schedule.flights[2].arrival_time);
+        assert_eq!(Unscheduled, schedule.flights[2].status);
+
+        schedule.assign();
+        assert_eq!(Scheduled, schedule.flights[0].status);
+        assert_eq!(Unscheduled, schedule.flights[1].status);
+        assert_eq!(Unscheduled, schedule.flights[2].status);
+    }
+
 }
 
 #[cfg(test)]
 mod proptests {
+    use super::tests::{add_aircraft, add_airport, id};
     use super::*;
-    use crate::airport::Airport;
     use proptest::prelude::*;
 
     fn arb_id(prefix: &'static str) -> impl Strategy<Value=Arc<str>> {
@@ -682,10 +651,10 @@ mod proptests {
             arb_id("AP"),
             0..2500u64,
             10..1000u64,
-        ).prop_map(|(id, org, dst, dep, dur)| Flight {
-            id,
-            origin: Airport { id: org, mtt: 30 },
-            destination: Airport { id: dst, mtt: 30 },
+        ).prop_map(|(fid, org, dst, dep, dur)| Flight {
+            id: id(fid.as_ref()),
+            origin_id: id(org.as_ref()),
+            destination_id: id(dst.as_ref()),
             departure_time: Time(dep),
             arrival_time: Time(dep) + dur,
             aircraft_id: None,
@@ -700,15 +669,14 @@ mod proptests {
             flights in prop::collection::vec(arb_flight(), 1..30)
         ) {
             let mut aircraft_map = HashMap::new();
+            let mut airports_map = HashMap::new();
             for (ac_id, loc_id) in aircraft_data {
-                aircraft_map.insert(ac_id.clone(), Aircraft {
-                    id: ac_id,
-                    initial_location: Airport { id: loc_id, mtt: 30 },
-                    disruptions: vec![],
-                });
+                add_aircraft(&mut aircraft_map, ac_id.as_ref(), loc_id.as_ref(), vec![]);
             }
-
-            let mut schedule = Schedule::new(aircraft_map, flights);
+            add_airport(&mut airports_map, "AP_1", 30, vec![]);
+            add_airport(&mut airports_map, "AP_2", 30, vec![]);
+            add_airport(&mut airports_map, "AP_3", 30, vec![]);
+            let mut schedule = Schedule::new(aircraft_map, airports_map, flights);
 
             schedule.assign();
 
@@ -732,24 +700,23 @@ mod proptests {
                     );
 
                     prop_assert!(
-                        first.destination == second.origin,
+                        first.destination_id == second.origin_id,
                         "\nWrong airport:\nFlight {} lands at {} vs Flight {} (takes off at {})",
-                        first.id, first.destination.id, second.id, second.origin.id
+                        first.id, first.destination_id, second.id, second.origin_id
                     );
                 }
 
                 if let Some(first_flight) = assigned.first() {
                     if let Some(ac) = schedule.aircraft.get(&first_flight.aircraft_id.clone().unwrap()) {
                         prop_assert!(
-                            first_flight.origin == ac.initial_location,
+                            first_flight.origin_id == ac.initial_location_id,
                             "\nWrong airport:\nAircraft {} originates at {} but Flight {} (takes off at {})",
-                            ac.id, ac.initial_location.id, first_flight.id, first_flight.origin.id
+                            ac.id, ac.initial_location_id, first_flight.id, first_flight.origin_id
                         );
                     }
                 }
             }
         }
     }
-
 
 }

@@ -1,11 +1,11 @@
-use std::fmt;
-use std::sync::Arc;
+use crate::aircraft::AircraftId;
+use crate::airport::AirportId;
+use crate::time::Time;
 use colored::*;
 use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::sync::Arc;
 use tabled::Tabled;
-use crate::aircraft::AircraftId;
-use crate::airport::Airport;
-use crate::time::Time;
 
 pub type FlightId = Arc<str>;
 
@@ -32,8 +32,8 @@ pub struct Flight {
     pub id: FlightId,
     #[tabled(display = "display_option")]
     pub aircraft_id: Option<AircraftId>,
-    pub origin: Airport,
-    pub destination: Airport,
+    pub origin_id: AirportId,
+    pub destination_id: AirportId,
     pub departure_time: Time,
     pub arrival_time: Time,
     pub status: FlightStatus,

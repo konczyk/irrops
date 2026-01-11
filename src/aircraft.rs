@@ -1,4 +1,4 @@
-use crate::airport::Airport;
+use crate::airport::AirportId;
 use crate::time::Time;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -15,5 +15,5 @@ pub type AircraftId = Arc<str>;
 pub struct Aircraft {
     pub id: AircraftId,
     pub disruptions: Vec<Availability>,
-    pub initial_location: Airport,
+    pub initial_location_id: AirportId,
 }

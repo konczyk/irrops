@@ -2,22 +2,39 @@
   "aircraft": [
     {
       "id": "ALPHA",
-      "initial_location": { "id": "WAW", "mtt": 30 },
+      "initial_location_id": "WAW",
       "disruptions": [
         { "from": 300, "to": 400 }
       ]
     },
     {
       "id": "BRAVO",
-      "initial_location": { "id": "WAW", "mtt": 30 },
+      "initial_location_id": "WAW",
+      "disruptions": []
+    }
+  ],
+  "airports": [
+    {
+      "id": "WAW",
+      "mtt": 30,
+      "disruptions": []
+    },
+    {
+      "id": "KRK",
+      "mtt": 30,
+      "disruptions": []
+    },
+    {
+      "id": "GDN",
+      "mtt": 30,
       "disruptions": []
     }
   ],
   "flights": [
     {
       "id": "FL-101",
-      "origin": { "id": "WAW", "mtt": 30 },
-      "destination": { "id": "KRK", "mtt": 30 },
+      "origin_id": "WAW",
+      "destination_id":  "KRK",
       "departure_time": 100,
       "arrival_time": 200,
       "aircraft_id": "",
@@ -25,8 +42,8 @@
     },
     {
       "id": "FL-102",
-      "origin": { "id": "KRK", "mtt": 30 },
-      "destination": { "id": "GDN", "mtt": 30 },
+      "origin_id": "KRK",
+      "destination_id": "GDN",
       "departure_time": 500,
       "arrival_time": 750,
       "aircraft_id": "",
@@ -34,8 +51,8 @@
     },
     {
       "id": "FL-201",
-      "origin": { "id": "GDN", "mtt": 30 },
-      "destination": { "id": "WAW", "mtt": 30 },
+      "origin_id": "GDN",
+      "destination_id": "WAW",
       "departure_time": 900,
       "arrival_time": 1050,
       "aircraft_id": "",
