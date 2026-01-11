@@ -1,7 +1,9 @@
-use std::sync::Arc;
 use crate::airport::Airport;
 use crate::time::Time;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
+#[derive(Serialize, Deserialize)]
 pub struct Availability {
     pub from: Time,
     pub to: Time,
@@ -9,6 +11,7 @@ pub struct Availability {
 
 pub type AircraftId = Arc<str>;
 
+#[derive(Serialize, Deserialize)]
 pub struct Aircraft {
     pub id: AircraftId,
     pub disruptions: Vec<Availability>,

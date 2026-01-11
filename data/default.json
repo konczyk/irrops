@@ -1,0 +1,45 @@
+{
+  "aircraft": [
+    {
+      "id": "ALPHA",
+      "initial_location": { "id": "WAW", "mtt": 30 },
+      "disruptions": [
+        { "from": 300, "to": 400 }
+      ]
+    },
+    {
+      "id": "BRAVO",
+      "initial_location": { "id": "WAW", "mtt": 30 },
+      "disruptions": []
+    }
+  ],
+  "flights": [
+    {
+      "id": "FL-101",
+      "origin": { "id": "WAW", "mtt": 30 },
+      "destination": { "id": "KRK", "mtt": 30 },
+      "departure_time": 100,
+      "arrival_time": 200,
+      "aircraft_id": "",
+      "status": "Unscheduled"
+    },
+    {
+      "id": "FL-102",
+      "origin": { "id": "KRK", "mtt": 30 },
+      "destination": { "id": "GDN", "mtt": 30 },
+      "departure_time": 500,
+      "arrival_time": 750,
+      "aircraft_id": "",
+      "status": "Unscheduled"
+    },
+    {
+      "id": "FL-201",
+      "origin": { "id": "GDN", "mtt": 30 },
+      "destination": { "id": "WAW", "mtt": 30 },
+      "departure_time": 900,
+      "arrival_time": 1050,
+      "aircraft_id": "",
+      "status": "Unscheduled"
+    }
+  ]
+}

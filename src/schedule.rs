@@ -4,11 +4,13 @@ use crate::flight::FlightStatus::{Delayed, Scheduled, Unscheduled};
 use crate::flight::{Flight, FlightId};
 use crate::time::Time;
 use std::collections::HashMap;
+use std::io;
 use std::sync::Arc;
+use serde::Deserialize;
 
 pub struct Schedule {
     aircraft: HashMap<AircraftId, Aircraft>,
-    flights: Vec<Flight>,
+    pub(crate) flights: Vec<Flight>,
     flights_index: HashMap<FlightId, usize>
 }
 
@@ -23,6 +25,22 @@ impl Schedule {
         }
     }
 
+    pub fn load_from_file(path: &str) -> io::Result<Self> {
+        let data = std::fs::read_to_string(path)?;
+        #[derive(Deserialize)]
+        struct RawData {
+            aircraft: Vec<Aircraft>,
+            flights: Vec<Flight>,
+        }
+        let raw: RawData = serde_json::from_str(&data)?;
+
+        let ac_map = raw.aircraft.into_iter()
+            .map(|a| (a.id.clone(), a))
+            .collect();
+
+        Ok(Schedule::new(ac_map, raw.flights))
+    }
+
     fn locate_aircraft(&self, aircraft_id: &AircraftId, default: AirportId) -> AirportId {
         self.flights.iter().rev()
             .filter(|f| f.status != Unscheduled && f.aircraft_id.as_ref().map(|id| **id == **aircraft_id).unwrap_or(false))
@@ -32,7 +50,7 @@ impl Schedule {
     }
 
     pub fn assign(&mut self)  {
-        let mut disruptions: HashMap<Arc<str>, Vec<(u64, u64)>> = HashMap::new();
+        let mut disruptions: HashMap<Arc<str>, Vec<(Time, Time)>> = HashMap::new();
         self.flights
             .iter().map(|f| (f.aircraft_id.as_ref(), f.departure_time, f.arrival_time + f.destination.mtt))
             .filter_map(|(maybe_id, dept, arr)| maybe_id.map(|id| (id.clone(), (dept, arr))))
@@ -87,7 +105,7 @@ impl Schedule {
             let empty_vec = vec![];
             let disruptions = aid.as_ref().and_then(|i| self.aircraft.get(i)).map(|a| a.disruptions.as_slice()).unwrap_or(&empty_vec);
 
-            let is_disrupted = |dep_time: u64, arr_time: u64| -> bool {
+            let is_disrupted = |dep_time: Time, arr_time: Time| -> bool {
                 disruptions.iter().any(|d| dep_time < d.to && arr_time > d.from)
             };
 
@@ -160,8 +178,8 @@ mod tests {
                 id: id("FLIGHT_1"),
                 origin: Airport { id: id("KRK"), mtt: 30 },
                 destination: Airport { id: id("WAW"), mtt: 30 },
-                departure_time: 100,
-                arrival_time: 200,
+                departure_time: Time(100),
+                arrival_time: Time(200),
                 aircraft_id: None,
                 status: Unscheduled,
             },
@@ -169,8 +187,8 @@ mod tests {
                 id: id("FLIGHT_2"),
                 origin: Airport { id: id("KRK"), mtt: 30 },
                 destination: Airport { id: id("GDN"), mtt: 30 },
-                departure_time: 300,
-                arrival_time: 400,
+                departure_time: Time(300),
+                arrival_time: Time(400),
                 aircraft_id: None,
                 status: Unscheduled,
             },
@@ -198,8 +216,8 @@ mod tests {
                 id: id("FLIGHT_1"),
                 origin: Airport { id: id("KRK"), mtt: 30 },
                 destination: Airport { id: id("WAW"), mtt: 30 },
-                departure_time: 100,
-                arrival_time: 200,
+                departure_time: Time(100),
+                arrival_time: Time(200),
                 aircraft_id: None,
                 status: Unscheduled,
             },
@@ -207,8 +225,8 @@ mod tests {
                 id: id("FLIGHT_2"),
                 origin: Airport { id: id("WAW"), mtt: 30 },
                 destination: Airport { id: id("GDN"), mtt: 30 },
-                departure_time: 220,
-                arrival_time: 300,
+                departure_time: Time(220),
+                arrival_time: Time(300),
                 aircraft_id: None,
                 status: Unscheduled,
             },
@@ -236,8 +254,8 @@ mod tests {
                 id: id("FLIGHT_1"),
                 origin: Airport { id: id("KRK"), mtt: 30 },
                 destination: Airport { id: id("WAW"), mtt: 30 },
-                departure_time: 100,
-                arrival_time: 200,
+                departure_time: Time(100),
+                arrival_time: Time(200),
                 aircraft_id: None,
                 status: Unscheduled,
             },
@@ -245,8 +263,8 @@ mod tests {
                 id: id("FLIGHT_2"),
                 origin: Airport { id: id("WAW"), mtt: 30 },
                 destination: Airport { id: id("GDN"), mtt: 30 },
-                departure_time: 240,
-                arrival_time: 300,
+                departure_time: Time(240),
+                arrival_time: Time(300),
                 aircraft_id: None,
                 status: Unscheduled,
             },
@@ -273,8 +291,8 @@ mod tests {
             id: id("FLIGHT_1"),
             origin: airport.clone(), 
             destination: Airport { id: id("WAW"), mtt: 30 },
-            departure_time: 100, 
-            arrival_time: 200, 
+            departure_time: Time(100),
+            arrival_time: Time(200),
             aircraft_id: None,
             status: Unscheduled,
         }];
@@ -292,7 +310,7 @@ mod tests {
         aircraft.insert(ac_id.clone(), Aircraft {
             id: ac_id.clone(),
             initial_location: Airport { id: id("KRK"), mtt: 30 },
-            disruptions: vec![Availability { from: 150, to: 250 }],
+            disruptions: vec![Availability { from: Time(150), to: Time(250) }],
         });
 
         let flights = vec![
@@ -300,8 +318,8 @@ mod tests {
                 id: id("FLIGHT_1"),
                 origin: Airport { id: id("KRK"), mtt: 30 },
                 destination: Airport { id: id("WAW"), mtt: 30 },
-                departure_time: 100,
-                arrival_time: 200,
+                departure_time: Time(100),
+                arrival_time: Time(200),
                 aircraft_id: None,
                 status: Unscheduled,
             },
@@ -329,8 +347,8 @@ mod tests {
                 id: id("FLIGHT_1"),
                 origin: Airport { id: id("KRK"), mtt: 30 },
                 destination: Airport { id: id("WAW"), mtt: 30 },
-                departure_time: 100,
-                arrival_time: 200,
+                departure_time: Time(100),
+                arrival_time: Time(200),
                 aircraft_id: None,
                 status: Unscheduled,
             },
@@ -338,8 +356,8 @@ mod tests {
                 id: id("FLIGHT_2"),
                 origin: Airport { id: id("WAW"), mtt: 30 },
                 destination: Airport { id: id("GDN"), mtt: 30 },
-                departure_time: 230,
-                arrival_time: 300,
+                departure_time: Time(230),
+                arrival_time: Time(300),
                 aircraft_id: None,
                 status: Unscheduled,
             },
@@ -367,8 +385,8 @@ mod tests {
                 id: id("FLIGHT_1"),
                 origin: Airport { id: id("KRK"), mtt: 30 },
                 destination: Airport { id: id("WAW"), mtt: 30 },
-                departure_time: 1200,
-                arrival_time: 1500,
+                departure_time: Time(1200),
+                arrival_time: Time(1500),
                 aircraft_id: None,
                 status: Unscheduled,
             },
@@ -376,8 +394,8 @@ mod tests {
                 id: id("FLIGHT_2"),
                 origin: Airport { id: id("KRK"), mtt: 30 },
                 destination: Airport { id: id("GDN"), mtt: 30 },
-                departure_time: 1100,
-                arrival_time: 1800,
+                departure_time: Time(1100),
+                arrival_time: Time(1800),
                 aircraft_id: None,
                 status: Unscheduled,
             },
@@ -411,8 +429,8 @@ mod tests {
                 id: id("FLIGHT_1"),
                 origin: Airport { id: id("KRK"), mtt: 30 },
                 destination: Airport { id: id("WRO"), mtt: 30 },
-                departure_time: 1200,
-                arrival_time: 1500,
+                departure_time: Time(1200),
+                arrival_time: Time(1500),
                 aircraft_id: Some(ac_id1.clone()),
                 status: Scheduled,
             },
@@ -420,8 +438,8 @@ mod tests {
                 id: id("FLIGHT_2"),
                 origin: Airport { id: id("WRO"), mtt: 30 },
                 destination: Airport { id: id("WAW"), mtt: 30 },
-                departure_time: 1800,
-                arrival_time: 2000,
+                departure_time: Time(1800),
+                arrival_time: Time(2000),
                 aircraft_id: Some(ac_id1.clone()),
                 status: Scheduled,
             },
@@ -429,8 +447,8 @@ mod tests {
                 id: id("FLIGHT_3"),
                 origin: Airport { id: id("WAW"), mtt: 30 },
                 destination: Airport { id: id("GDN"), mtt: 30 },
-                departure_time: 2100,
-                arrival_time: 2350,
+                departure_time: Time(2100),
+                arrival_time: Time(2350),
                 aircraft_id: Some(ac_id1.clone()),
                 status: Scheduled,
             },
@@ -438,8 +456,8 @@ mod tests {
                 id: id("FLIGHT_4"),
                 origin: Airport { id: id("WAW"), mtt: 30 },
                 destination: Airport { id: id("GDN"), mtt: 30 },
-                departure_time: 2100,
-                arrival_time: 2300,
+                departure_time: Time(2100),
+                arrival_time: Time(2300),
                 aircraft_id: Some(ac_id2),
                 status: Scheduled,
             },
@@ -449,17 +467,17 @@ mod tests {
         schedule.assign();
         schedule.apply_delay(id("FLIGHT_1"), 500);
 
-        assert_eq!(1200 + 500, schedule.flights[0].departure_time);
-        assert_eq!(1500 + 500, schedule.flights[0].arrival_time);
+        assert_eq!(Time(1200) + 500, schedule.flights[0].departure_time);
+        assert_eq!(Time(1500) + 500, schedule.flights[0].arrival_time);
 
-        assert_eq!(2000 + 30, schedule.flights[1].departure_time);
-        assert_eq!(2000 + 30 + 200, schedule.flights[1].arrival_time);
+        assert_eq!(Time(2000) + 30, schedule.flights[1].departure_time);
+        assert_eq!(Time(2000) + 30 + 200, schedule.flights[1].arrival_time);
 
-        assert_eq!(2230 + 30, schedule.flights[2].departure_time);
-        assert_eq!(2230 + 30 + 250, schedule.flights[2].arrival_time);
+        assert_eq!(Time(2230) + 30, schedule.flights[2].departure_time);
+        assert_eq!(Time(2230) + 30 + 250, schedule.flights[2].arrival_time);
 
-        assert_eq!(2100, schedule.flights[3].departure_time);
-        assert_eq!(2300, schedule.flights[3].arrival_time);
+        assert_eq!(Time(2100), schedule.flights[3].departure_time);
+        assert_eq!(Time(2300), schedule.flights[3].arrival_time);
     }
 
     #[test]
@@ -469,7 +487,7 @@ mod tests {
         aircraft.insert(ac_id1.clone(), Aircraft {
             id: ac_id1.clone(),
             initial_location: Airport { id: id("KRK"), mtt: 30 },
-            disruptions: vec![Availability { from: 1800, to: 1900 }],
+            disruptions: vec![Availability { from: Time(1800), to: Time(1900) }],
         });
 
         let flights = vec![
@@ -477,8 +495,8 @@ mod tests {
                 id: id("FLIGHT_1"),
                 origin: Airport { id: id("KRK"), mtt: 30 },
                 destination: Airport { id: id("WRO"), mtt: 30 },
-                departure_time: 1200,
-                arrival_time: 1500,
+                departure_time: Time(1200),
+                arrival_time: Time(1500),
                 aircraft_id: Some(ac_id1.clone()),
                 status: Scheduled,
             },
@@ -486,8 +504,8 @@ mod tests {
                 id: id("FLIGHT_2"),
                 origin: Airport { id: id("WRO"), mtt: 30 },
                 destination: Airport { id: id("WAW"), mtt: 30 },
-                departure_time: 1800,
-                arrival_time: 2000,
+                departure_time: Time(1800),
+                arrival_time: Time(2000),
                 aircraft_id: Some(ac_id1.clone()),
                 status: Scheduled,
             },
@@ -495,8 +513,8 @@ mod tests {
                 id: id("FLIGHT_3"),
                 origin: Airport { id: id("WAW"), mtt: 30 },
                 destination: Airport { id: id("GDN"), mtt: 30 },
-                departure_time: 2100,
-                arrival_time: 2350,
+                departure_time: Time(2100),
+                arrival_time: Time(2350),
                 aircraft_id: Some(ac_id1.clone()),
                 status: Scheduled,
             },
@@ -507,16 +525,16 @@ mod tests {
         let broken = schedule.apply_delay(id("FLIGHT_1"), 500);
         assert_eq!(vec![id("FLIGHT_1"), id("FLIGHT_2"), id("FLIGHT_3")], broken);
 
-        assert_eq!(1200, schedule.flights[0].departure_time);
-        assert_eq!(1500, schedule.flights[0].arrival_time);
+        assert_eq!(Time(1700), schedule.flights[0].departure_time);
+        assert_eq!(Time(2000), schedule.flights[0].arrival_time);
         assert_eq!(Unscheduled, schedule.flights[0].status);
 
-        assert_eq!(1800, schedule.flights[1].departure_time);
-        assert_eq!(2000, schedule.flights[1].arrival_time);
+        assert_eq!(Time(1800), schedule.flights[1].departure_time);
+        assert_eq!(Time(2000), schedule.flights[1].arrival_time);
         assert_eq!(Unscheduled, schedule.flights[1].status);
 
-        assert_eq!(2100, schedule.flights[2].departure_time);
-        assert_eq!(2350, schedule.flights[2].arrival_time);
+        assert_eq!(Time(2100), schedule.flights[2].departure_time);
+        assert_eq!(Time(2350), schedule.flights[2].arrival_time);
         assert_eq!(Unscheduled, schedule.flights[2].status);
     }
 
@@ -527,7 +545,7 @@ mod tests {
         aircraft.insert(ac_id1.clone(), Aircraft {
             id: ac_id1.clone(),
             initial_location: Airport { id: id("KRK"), mtt: 30 },
-            disruptions: vec![Availability { from: 2100, to: 2200 }],
+            disruptions: vec![Availability { from: Time(2100), to: Time(2200) }],
         });
 
         let flights = vec![
@@ -535,8 +553,8 @@ mod tests {
                 id: id("FLIGHT_1"),
                 origin: Airport { id: id("KRK"), mtt: 30 },
                 destination: Airport { id: id("WRO"), mtt: 30 },
-                departure_time: 1200,
-                arrival_time: 1500,
+                departure_time: Time(1200),
+                arrival_time: Time(1500),
                 aircraft_id: Some(ac_id1.clone()),
                 status: Scheduled,
             },
@@ -544,8 +562,8 @@ mod tests {
                 id: id("FLIGHT_2"),
                 origin: Airport { id: id("WRO"), mtt: 30 },
                 destination: Airport { id: id("WAW"), mtt: 30 },
-                departure_time: 1800,
-                arrival_time: 2000,
+                departure_time: Time(1800),
+                arrival_time: Time(2000),
                 aircraft_id: Some(ac_id1.clone()),
                 status: Scheduled,
             },
@@ -553,8 +571,8 @@ mod tests {
                 id: id("FLIGHT_3"),
                 origin: Airport { id: id("WAW"), mtt: 30 },
                 destination: Airport { id: id("GDN"), mtt: 30 },
-                departure_time: 2100,
-                arrival_time: 2350,
+                departure_time: Time(2100),
+                arrival_time: Time(2350),
                 aircraft_id: Some(ac_id1.clone()),
                 status: Scheduled,
             },
@@ -565,16 +583,16 @@ mod tests {
         let broken = schedule.apply_delay(id("FLIGHT_1"), 500);
         assert_eq!(vec![id("FLIGHT_2"), id("FLIGHT_3")], broken);
 
-        assert_eq!(1200 + 500, schedule.flights[0].departure_time);
-        assert_eq!(1500 + 500, schedule.flights[0].arrival_time);
+        assert_eq!(Time(1200) + 500, schedule.flights[0].departure_time);
+        assert_eq!(Time(1500) + 500, schedule.flights[0].arrival_time);
         assert_eq!(Delayed, schedule.flights[0].status);
 
-        assert_eq!(1800, schedule.flights[1].departure_time);
-        assert_eq!(2000, schedule.flights[1].arrival_time);
+        assert_eq!(Time(1800), schedule.flights[1].departure_time);
+        assert_eq!(Time(2000), schedule.flights[1].arrival_time);
         assert_eq!(Unscheduled, schedule.flights[1].status);
 
-        assert_eq!(2100, schedule.flights[2].departure_time);
-        assert_eq!(2350, schedule.flights[2].arrival_time);
+        assert_eq!(Time(2100), schedule.flights[2].departure_time);
+        assert_eq!(Time(2350), schedule.flights[2].arrival_time);
         assert_eq!(Unscheduled, schedule.flights[2].status);
     }
 
@@ -586,7 +604,7 @@ mod tests {
         aircraft.insert(ac_id1.clone(), Aircraft {
             id: ac_id1.clone(),
             initial_location: Airport { id: id("KRK"), mtt: 30 },
-            disruptions: vec![Availability { from: 600, to: 800 }],
+            disruptions: vec![Availability { from: Time(600), to: Time(800) }],
         });
         aircraft.insert(ac_id2.clone(), Aircraft {
             id: ac_id2.clone(),
@@ -599,8 +617,8 @@ mod tests {
                 id: id("FLIGHT_1"),
                 origin: Airport { id: id("KRK"), mtt: 30 },
                 destination: Airport { id: id("WRO"), mtt: 30 },
-                departure_time: 200,
-                arrival_time: 500,
+                departure_time: Time(200),
+                arrival_time: Time(500),
                 aircraft_id: Some(ac_id1.clone()),
                 status: Scheduled,
             },
@@ -608,8 +626,8 @@ mod tests {
                 id: id("FLIGHT_2"),
                 origin: Airport { id: id("KRK"), mtt: 30 },
                 destination: Airport { id: id("WAW"), mtt: 30 },
-                departure_time: 1800,
-                arrival_time: 2000,
+                departure_time: Time(1800),
+                arrival_time: Time(2000),
                 aircraft_id: Some(ac_id1.clone()),
                 status: Scheduled,
             },
@@ -620,25 +638,25 @@ mod tests {
         schedule.apply_delay(id("FLIGHT_1"), 400);
 
         assert_eq!(None, schedule.flights[0].aircraft_id);
-        assert_eq!(200 + 400, schedule.flights[0].departure_time);
-        assert_eq!(500 + 400, schedule.flights[0].arrival_time);
+        assert_eq!(Time(200) + 400, schedule.flights[0].departure_time);
+        assert_eq!(Time(500) + 400, schedule.flights[0].arrival_time);
         assert_eq!(Unscheduled, schedule.flights[0].status);
 
         assert_eq!(None, schedule.flights[1].aircraft_id);
-        assert_eq!(1800, schedule.flights[1].departure_time);
-        assert_eq!(2000, schedule.flights[1].arrival_time);
+        assert_eq!(Time(1800), schedule.flights[1].departure_time);
+        assert_eq!(Time(2000), schedule.flights[1].arrival_time);
         assert_eq!(Unscheduled, schedule.flights[1].status);
 
         schedule.assign();
 
         assert_eq!(Some(id("PLANE_2")), schedule.flights[0].aircraft_id);
-        assert_eq!(200 + 400, schedule.flights[0].departure_time);
-        assert_eq!(500 + 400, schedule.flights[0].arrival_time);
+        assert_eq!(Time(200) + 400, schedule.flights[0].departure_time);
+        assert_eq!(Time(500) + 400, schedule.flights[0].arrival_time);
         assert_eq!(Scheduled, schedule.flights[0].status);
 
         assert_eq!(Some(id("PLANE_1")), schedule.flights[1].aircraft_id);
-        assert_eq!(1800, schedule.flights[1].departure_time);
-        assert_eq!(2000, schedule.flights[1].arrival_time);
+        assert_eq!(Time(1800), schedule.flights[1].departure_time);
+        assert_eq!(Time(2000), schedule.flights[1].arrival_time);
         assert_eq!(Scheduled, schedule.flights[1].status);
     }
 }
@@ -668,8 +686,8 @@ mod proptests {
             id,
             origin: Airport { id: org, mtt: 30 },
             destination: Airport { id: dst, mtt: 30 },
-            departure_time: dep,
-            arrival_time: dep + dur,
+            departure_time: Time(dep),
+            arrival_time: Time(dep) + dur,
             aircraft_id: None,
             status: Unscheduled,
         })
