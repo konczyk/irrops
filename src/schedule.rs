@@ -47,29 +47,31 @@ impl Schedule {
         Ok(Schedule::new(ac_map, ap_map, raw.flights))
     }
 
-    fn locate_aircraft(&self, aircraft_id: &AircraftId, default: AirportId) -> AirportId {
-        self.flights.iter().rev()
-            .filter(|f| f.status != Unscheduled && f.aircraft_id.as_ref().map(|id| **id == **aircraft_id).unwrap_or(false))
-            .map(|f| f.destination_id.clone())
-            .next()
-            .unwrap_or(default)
-    }
-
     pub fn assign(&mut self)  {
         let mut sorted_ids = self.aircraft.keys().collect::<Vec<&AircraftId>>();
         sorted_ids.sort();
 
+        let mut current_locations: HashMap<AircraftId, AirportId> = self.aircraft.iter()
+            .map(|(id, ac)| (id.clone(), ac.initial_location_id.clone()))
+            .collect();
+
+        self.flights.iter()
+            .filter(|f| f.status != Unscheduled)
+            .for_each(|f| {
+                if let Some(ac_id) = &f.aircraft_id {
+                    current_locations.insert(ac_id.clone(), f.destination_id.clone());
+                }
+            });
+
         // collect aircraft per airport, sorted by aircraft name
-        let mut locations = HashMap::<AirportId, Vec<AircraftId>>::new();
+        let mut aircraft_by_airport = HashMap::<AirportId, Vec<&AircraftId>>::new();
         sorted_ids.iter()
-            .filter_map(|id| self.aircraft.get(*id))
-            .map(|ac| {
-                (self.locate_aircraft(&ac.id, self.airports.get(&ac.initial_location_id).map(|l| l.id.clone()).unwrap()), ac.id.clone())
-            })
-            .for_each(|(airport_id, aircraft_id)| {
-                locations.entry(airport_id)
-                    .and_modify(|value| value.push(aircraft_id.clone()))
-                    .or_insert(vec![aircraft_id.clone()]);
+            .for_each(|ac_id| {
+                if let Some(ap_id) = current_locations.get(*ac_id) {
+                    aircraft_by_airport.entry(ap_id.clone())
+                        .or_default()
+                        .push(*ac_id)
+                }
             });
 
         // collect disruptions due to currently scheduled flights
@@ -79,8 +81,8 @@ impl Schedule {
             .filter_map(|(maybe_id, dep, arr)| maybe_id.map(|id| (id.clone(), (dep, arr))))
             .for_each(|(id, val)| {
                 busy.entry(id)
-                    .and_modify(|intervals| intervals.push(val))
-                    .or_insert(vec![val]);
+                    .or_default()
+                    .push(val)
             });
 
 
@@ -88,10 +90,10 @@ impl Schedule {
             .filter(|flight| flight.status == Unscheduled)
             .for_each(|flight| {
                 // collect candidates at the origin airport that are not disrupted
-                let chosen_aircraft = locations.get(&flight.origin_id)
+                let chosen_aircraft = aircraft_by_airport.get(&flight.origin_id)
                     .and_then(|ac_ids| {
                         ac_ids.iter()
-                            .filter_map(|ac_id| self.aircraft.get(ac_id))
+                            .filter_map(|ac_id| self.aircraft.get(*ac_id))
                             // filter aircraft at the origin airport that are not disrupted
                             .filter(|a| a.disruptions.iter().all(|d| !Time::is_overlapping(&(flight.departure_time, flight.arrival_time), &(d.from, d.to))))
                             // filter out busy ones
@@ -113,18 +115,18 @@ impl Schedule {
                     flight.status = Scheduled;
                     let mtt = self.airports.get(&flight.destination_id).map(|ap| ap.mtt).unwrap_or(0);
                     busy.entry(aircraft.id.clone())
-                        .and_modify(|val| val.push((flight.departure_time, flight.arrival_time + mtt)))
-                        .or_insert(vec![(flight.departure_time, flight.arrival_time + mtt)]);
-                    locations
+                        .or_default()
+                        .push((flight.departure_time, flight.arrival_time + mtt));
+                    aircraft_by_airport
                         .entry(flight.destination_id.clone())
                         .and_modify(|val| {
-                            val.push(aircraft.id.clone());
+                            val.push(&aircraft.id);
                             val.sort();
                         })
-                        .or_insert(vec![aircraft.id.clone()]);
-                    locations
+                        .or_insert(vec![&aircraft.id]);
+                    aircraft_by_airport
                         .entry(flight.origin_id.clone())
-                        .and_modify(|val| val.retain(|id| **id != *aircraft.id));
+                        .and_modify(|val| val.retain(|id| **id != aircraft.id));
                 }
             })
     }

@@ -1,9 +1,11 @@
+use std::io::Write;
 use crate::schedule::Schedule;
 use clap::Parser;
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
 use rustyline::{Context, Editor, Helper, Highlighter, Hinter, Validator};
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use tabled::settings::Style;
 use crate::flight::Flight;
@@ -45,6 +47,28 @@ impl Completer for CompleteHelper {
 
         Ok((0, candidates))
     }
+}
+
+fn paginate(content: String) {
+    let mut pager = Command::new("less")
+        .arg("-R")
+        .stdin(Stdio::piped())
+        .spawn()
+        // Fallback to 'more' if 'less' isn't available
+        .or_else(|_| Command::new("more").stdin(Stdio::piped()).spawn())
+        .expect("Failed to spawn pager");
+
+    let mut stdin = pager.stdin.take().expect("Failed to open stdin for pager");
+
+    if let Err(e) = stdin.write_all(content.as_bytes()) {
+        // Broken pipe is common if the user quits the pager early
+        if e.kind() != std::io::ErrorKind::BrokenPipe {
+            eprintln!("Error writing to pager: {}", e);
+        }
+    }
+
+    // Wait for the user to close the pager before returning to the ">> " prompt
+    let _ = pager.wait();
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -100,7 +124,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let mut table = tabled::Table::new(&filtered_flights);
                             table.with(Style::rounded());
                             table.with(tabled::settings::Alignment::left());
-                            println!("{}", table);
+                            if filtered_flights.len() > 20 {
+                                paginate(table.to_string());
+                            } else {
+                                println!("{}", table);
+                            }
                         }
                     },
                     "delay" => {
