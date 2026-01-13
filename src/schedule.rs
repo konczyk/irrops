@@ -15,6 +15,8 @@ pub struct Schedule {
 }
 
 impl Schedule {
+    const MAX_DELAY: u64 = 2000;
+
     pub fn new(aircraft: HashMap<AircraftId, Aircraft>, airports: HashMap<AirportId, Airport>, mut flights: Vec<Flight>) -> Schedule {
         flights.sort_by_key(|f| f.departure_time);
         let flights_index = flights.iter().enumerate().map(|(i, v)| (v.id.clone(), i)).collect::<HashMap<FlightId, usize>>();
@@ -162,15 +164,20 @@ impl Schedule {
             };
 
             let mut is_broken = false;
-            self.flights[*f_id].departure_time += shift;
-            self.flights[*f_id].arrival_time += shift;
-            let dep_time = self.flights[*f_id].departure_time;
-            let arr_time = self.flights[*f_id].arrival_time;
-            if is_ac_disrupted(dep_time, arr_time) || is_ap_disrupted(&self.flights[*f_id], dep_time, arr_time) {
+            if shift > Self::MAX_DELAY {
                 mark_unscheduled(&mut self.flights[*f_id]);
                 is_broken = true;
             } else {
-                self.flights[*f_id].status = Delayed;
+                let orig_dep_time = self.flights[*f_id].departure_time;
+                self.flights[*f_id].departure_time += shift;
+                self.flights[*f_id].arrival_time += shift;
+                let arr_time = self.flights[*f_id].arrival_time;
+                if is_ac_disrupted(orig_dep_time, arr_time) || is_ap_disrupted(&self.flights[*f_id], orig_dep_time, arr_time) {
+                    mark_unscheduled(&mut self.flights[*f_id]);
+                    is_broken = true;
+                } else {
+                    self.flights[*f_id].status = Delayed;
+                }
             }
 
             if let Some(ac_id) = aid {
@@ -182,14 +189,15 @@ impl Schedule {
                         continue;
                     }
                     let len = flight.arrival_time - flight.departure_time;
-                    let dep_time = prev_arrival_time + self.airports.get(&flight.origin_id).map(|d| d.mtt).unwrap();
+                    let ready_at = prev_arrival_time + self.airports.get(&flight.origin_id).map(|d| d.mtt).unwrap();
+                    let dep_time = ready_at.max(flight.departure_time);
                     let arr_time = dep_time + len;
                     let is_overlapping = flight.departure_time < prev_arrival_time + self.airports.get(&flight.origin_id).map(|d| d.mtt).unwrap();
 
-                    let is_ac_disrupted = is_overlapping && is_ac_disrupted(dep_time, arr_time);
+                    let is_ac_disrupted = is_ac_disrupted(flight.departure_time, arr_time);
                     let is_disrupted = is_ac_disrupted || is_ap_disrupted(&flight, dep_time, arr_time);
 
-                    if is_disrupted {
+                    if is_disrupted || dep_time - flight.departure_time > Time(Self::MAX_DELAY) {
                         mark_unscheduled(flight);
                         is_broken = true;
                     } else if is_overlapping {
@@ -627,6 +635,77 @@ mod tests {
     }
 
     #[test]
+    fn test_delay_aircraft_first_flight_into_max_delay() {
+        let mut aircraft = HashMap::new();
+        let mut airports = HashMap::new();
+        let mut flights = Vec::new();
+
+        add_airport(&mut airports, "KRK", 30, vec![]);
+        add_airport(&mut airports, "WAW", 30, vec![]);
+        add_airport(&mut airports, "GDN", 30, vec![]);
+        add_airport(&mut airports, "WRO", 30, vec![]);
+
+        add_aircraft(&mut aircraft, "PLANE_1", "KRK", vec![]);
+
+        add_flight(&mut flights, "FLIGHT_1", "KRK", "WRO", 1200, 1500, Some("PLANE_1"), Scheduled);
+        add_flight(&mut flights, "FLIGHT_2", "WRO", "WAW", 1800, 2000, Some("PLANE_1"), Scheduled);
+        add_flight(&mut flights, "FLIGHT_3", "WAW", "GDN", 2100, 2350, Some("PLANE_1"), Scheduled);
+
+        let mut schedule = Schedule::new(aircraft, airports, flights);
+        schedule.assign();
+        let broken = schedule.apply_delay(id("FLIGHT_1"), 2050);
+        assert_eq!(vec![id("FLIGHT_1"), id("FLIGHT_2"), id("FLIGHT_3")], broken);
+
+        assert_eq!(Time(1200), schedule.flights[0].departure_time);
+        assert_eq!(Time(1500), schedule.flights[0].arrival_time);
+        assert_eq!(Unscheduled, schedule.flights[0].status);
+
+        assert_eq!(Time(1800), schedule.flights[1].departure_time);
+        assert_eq!(Time(2000), schedule.flights[1].arrival_time);
+        assert_eq!(Unscheduled, schedule.flights[1].status);
+
+        assert_eq!(Time(2100), schedule.flights[2].departure_time);
+        assert_eq!(Time(2350), schedule.flights[2].arrival_time);
+        assert_eq!(Unscheduled, schedule.flights[2].status);
+    }
+
+    #[test]
+    fn test_delay_aircraft_subsequent_flight_into_max_delay() {
+        let mut aircraft = HashMap::new();
+        let mut airports = HashMap::new();
+        let mut flights = Vec::new();
+
+        add_airport(&mut airports, "KRK", 30, vec![]);
+        add_airport(&mut airports, "WAW", 30, vec![]);
+        add_airport(&mut airports, "GDN", 30, vec![]);
+        add_airport(&mut airports, "WRO", 30, vec![]);
+
+        add_aircraft(&mut aircraft, "PLANE_1", "KRK", vec![]);
+
+
+        add_flight(&mut flights, "FLIGHT_1", "KRK", "WRO", 200, 300, Some("PLANE_1"), Scheduled);
+        add_flight(&mut flights, "FLIGHT_2", "WRO", "WAW", 305, 500, Some("PLANE_1"), Scheduled);
+        add_flight(&mut flights, "FLIGHT_3", "WAW", "GDN", 600, 700, Some("PLANE_1"), Scheduled);
+
+        let mut schedule = Schedule::new(aircraft, airports, flights);
+        schedule.assign();
+        let broken = schedule.apply_delay(id("FLIGHT_1"), 1999);
+        assert_eq!(vec![id("FLIGHT_2"), id("FLIGHT_3")], broken);
+
+        assert_eq!(Time(200) + 1999, schedule.flights[0].departure_time);
+        assert_eq!(Time(300) + 1999, schedule.flights[0].arrival_time);
+        assert_eq!(Delayed, schedule.flights[0].status);
+
+        assert_eq!(Time(305), schedule.flights[1].departure_time);
+        assert_eq!(Time(500), schedule.flights[1].arrival_time);
+        assert_eq!(Unscheduled, schedule.flights[1].status);
+
+        assert_eq!(Time(600), schedule.flights[2].departure_time);
+        assert_eq!(Time(700), schedule.flights[2].arrival_time);
+        assert_eq!(Unscheduled, schedule.flights[2].status);
+    }
+
+    #[test]
     fn test_delay_aircraft_no_shift() {
         let mut aircraft = HashMap::new();
         let mut airports = HashMap::new();
@@ -819,9 +898,9 @@ mod tests {
 #[cfg(test)]
 mod proptests {
     use super::tests::{add_aircraft, add_airport, id};
-    use std::sync::Arc;
     use super::*;
     use proptest::prelude::*;
+    use std::sync::Arc;
 
     fn arb_id(prefix: &'static str) -> impl Strategy<Value=Arc<str>> {
         prop_oneof![
