@@ -7,12 +7,18 @@ use tabled::Tabled;
 
 pub type AirportId = Arc<str>;
 
+#[derive(Serialize, Deserialize, Tabled, Clone, Debug, PartialEq)]
+pub struct Curfew {
+    pub from: Time,
+    pub to: Time,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Tabled)]
 pub struct Airport {
     pub id: Arc<str>,
     pub mtt: u64,
     #[tabled(display = "format_disruptions")]
-    pub disruptions: Vec<(Time, Time)>
+    pub disruptions: Vec<Curfew>
 }
 
 impl fmt::Display for Airport {
@@ -21,12 +27,12 @@ impl fmt::Display for Airport {
     }
 }
 
-fn format_disruptions(disruptions: &Vec<(Time, Time)>) -> String {
+fn format_disruptions(disruptions: &Vec<Curfew>) -> String {
     if disruptions.is_empty() {
         return "None".to_string();
     }
     disruptions.iter()
-        .map(|(start, end)| format!("{}-{}", start, end))
+        .map(|Curfew {from: start, to: end }| format!("{}-{}", start, end))
         .collect::<Vec<_>>()
         .join(", ")
 }
