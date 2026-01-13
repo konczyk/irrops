@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::ops::{Add, AddAssign, Sub};
+use std::ops::{Add, AddAssign, Div, Sub};
 
 #[derive(Debug, Clone, Copy, Ord, Eq, PartialEq, Serialize, Deserialize, PartialOrd)]
 pub struct Time(pub u64);
@@ -56,6 +56,14 @@ impl Sub<Time> for Time {
 impl AddAssign<u64> for Time {
     fn add_assign(&mut self, rhs: u64) {
         self.0 += rhs;
+    }
+}
+
+impl Div<Time> for Time {
+    type Output = Time;
+
+    fn div(self, rhs: Time) -> Self::Output {
+        Time(self.0 / rhs.0)
     }
 }
 

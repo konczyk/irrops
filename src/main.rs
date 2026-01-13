@@ -109,14 +109,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let parts: Vec<&str> = trimmed.split_whitespace().collect();
                 match parts[0] {
                     "ls" => {
-                        let sub = parts.get(1).map(|s| *s).unwrap_or("a");
+                        let mut day = None;
+                        let mut status = None;
+                        for part in parts.iter().skip(1) {
+                            if let Ok(d) = part.parse::<u64>() {
+                                if d > 0 {
+                                    day = Some(d);
+                                }
+                            } else {
+                                status = match *part {
+                                    "u" | "unscheduled" => Some(Unscheduled),
+                                    "s" | "scheduled" => Some(Scheduled),
+                                    "d" | "delayed" => Some(Delayed),
+                                    _ => None,
+                                }
+                            }
+                        }
                         let filtered_flights: Vec<&Flight> = schedule.flights.iter()
-                            .filter(|f| match sub {
-                                "u" | "unscheduled" => f.status == Unscheduled,
-                                "s" | "scheduled"   => f.status == Scheduled || f.status == Delayed,
-                                "d" | "delayed" => f.status == Delayed,
-                                _ => true, // 'ls' or 'ls a'
-                            })
+                            .filter(|f| if let Some(d) = day { f.departure_time / Time(1440) == Time(d - 1) } else { true })
+                            .filter(|f| if let Some(s) = &status { f.status == *s } else { true })
                             .collect();
                         if filtered_flights.is_empty() {
                             println!("No matching flights found.")
@@ -154,12 +165,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         schedule.assign();
                         println!("Recovery cycle complete.");
                     },
+                    "stats" => {
+                        let mut s = 0; // Scheduled
+                        let mut d = 0; // Delayed
+                        let mut u = 0; // Unscheduled
+                        let total = schedule.flights.len();
+
+                        for f in &schedule.flights {
+                            match f.status {
+                                Scheduled => s += 1,
+                                Delayed => d += 1,
+                                Unscheduled => u += 1,
+                            }
+                        }
+
+                        println!("\nFleet Utilization Summary:");
+                        println!("---------------------------");
+                        // Using colored here would be a nice touch based on our previous setup!
+                        println!("Scheduled:   {} ({:.1}%)", s, (s as f64 / total as f64) * 100.0);
+                        println!("Delayed:     {} ({:.1}%)", d, (d as f64 / total as f64) * 100.0);
+                        println!("Unscheduled: {} ({:.1}%)", u, (u as f64 / total as f64) * 100.0);
+                        println!("---------------------------");
+                        println!("Total Flights: {}\n", total);
+                    },
                     "help" | "?" => {
                         println!("\nAvailable Commands:");
                         println!("  ls [status]         - List all flights in a table or filter by status: u - unscheduled, s - scheduled, d - delayed");
                         println!("  delay <id> <m>      - Inject <m> minutes of delay into flight <id>");
                         println!("  curfew <id> <m> <m> - Inject a curfew from <m> to <m> minutes into airport <id>");
                         println!("  recover             - Re-run assignment to repair unscheduled flights");
+                        println!("  stats               - Display summary statistics");
                         println!("  help / ?            - Show this help menu");
                         println!("  exit / quit         - Exit the simulator\n");
                     },
