@@ -141,10 +141,10 @@ impl Schedule {
         let result = idx.and_then(|i| Some((i, self.flights[*i].aircraft_id.as_ref().map(|x| x.clone()))));
         if let Some((f_id, aid)) = result {
             let empty_vec = vec![];
-            let disruptions = aid.as_ref().and_then(|i| self.aircraft.get(i)).map(|a| a.disruptions.as_slice()).unwrap_or(&empty_vec);
+            let ac_disruptions = aid.as_ref().and_then(|i| self.aircraft.get(i)).map(|a| a.disruptions.as_slice()).unwrap_or(&empty_vec);
 
             let is_disrupted = |dep_time: Time, arr_time: Time| -> bool {
-                disruptions.iter().any(|d| Time::is_overlapping(&(dep_time, arr_time), &(d.from, d.to)))
+                ac_disruptions.iter().any(|d| Time::is_overlapping(&(dep_time, arr_time), &(d.from, d.to)))
             };
 
             let mut mark_unscheduled = |flight: &mut Flight| {
@@ -463,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn test_delay_aircraft_first_flight() {
+    fn test_delay_aircraft_first_flight_by_disruption() {
         let mut aircraft = HashMap::new();
         let mut airports = HashMap::new();
         let mut flights = Vec::new();
@@ -498,7 +498,7 @@ mod tests {
     }
 
     #[test]
-    fn test_delay_aircraft_subsequent_flight() {
+    fn test_delay_aircraft_subsequent_flight_by_disruption() {
         let mut aircraft = HashMap::new();
         let mut airports = HashMap::new();
         let mut flights = Vec::new();
@@ -530,6 +530,111 @@ mod tests {
         assert_eq!(Time(2100), schedule.flights[2].departure_time);
         assert_eq!(Time(2350), schedule.flights[2].arrival_time);
         assert_eq!(Unscheduled, schedule.flights[2].status);
+    }
+
+    #[test]
+    fn test_delay_aircraft_no_shift() {
+        let mut aircraft = HashMap::new();
+        let mut airports = HashMap::new();
+        let mut flights = Vec::new();
+
+        add_airport(&mut airports, "KRK", 30, vec![]);
+        add_airport(&mut airports, "WAW", 30, vec![]);
+        add_airport(&mut airports, "GDN", 30, vec![]);
+        add_airport(&mut airports, "WRO", 30, vec![]);
+
+        add_aircraft(&mut aircraft, "PLANE_1", "KRK", vec![]);
+
+        add_flight(&mut flights, "FLIGHT_1", "KRK", "WRO", 1200, 1500, Some("PLANE_1"), Scheduled);
+        add_flight(&mut flights, "FLIGHT_2", "WRO", "WAW", 1800, 2000, Some("PLANE_1"), Scheduled);
+        add_flight(&mut flights, "FLIGHT_3", "WAW", "GDN", 2100, 2350, Some("PLANE_1"), Scheduled);
+
+        let mut schedule = Schedule::new(aircraft, airports, flights);
+        schedule.assign();
+        let broken = schedule.apply_delay(id("FLIGHT_1"), 100);
+        assert!(broken.is_empty());
+
+        assert_eq!(Time(1300), schedule.flights[0].departure_time);
+        assert_eq!(Time(1600), schedule.flights[0].arrival_time);
+        assert_eq!(Delayed, schedule.flights[0].status);
+
+        assert_eq!(Time(1800), schedule.flights[1].departure_time);
+        assert_eq!(Time(2000), schedule.flights[1].arrival_time);
+        assert_eq!(Scheduled, schedule.flights[1].status);
+
+        assert_eq!(Time(2100), schedule.flights[2].departure_time);
+        assert_eq!(Time(2350), schedule.flights[2].arrival_time);
+        assert_eq!(Scheduled, schedule.flights[2].status);
+    }
+
+    #[test]
+    fn test_delay_aircraft_first_flight_by_overlap() {
+        let mut aircraft = HashMap::new();
+        let mut airports = HashMap::new();
+        let mut flights = Vec::new();
+
+        add_airport(&mut airports, "KRK", 30, vec![]);
+        add_airport(&mut airports, "WAW", 30, vec![]);
+        add_airport(&mut airports, "GDN", 30, vec![]);
+        add_airport(&mut airports, "WRO", 30, vec![]);
+
+        add_aircraft(&mut aircraft, "PLANE_1", "KRK", vec![]);
+
+        add_flight(&mut flights, "FLIGHT_1", "KRK", "WRO", 1200, 1500, Some("PLANE_1"), Scheduled);
+        add_flight(&mut flights, "FLIGHT_2", "WRO", "WAW", 1800, 2000, Some("PLANE_1"), Scheduled);
+        add_flight(&mut flights, "FLIGHT_3", "WAW", "GDN", 2100, 2350, Some("PLANE_1"), Scheduled);
+
+        let mut schedule = Schedule::new(aircraft, airports, flights);
+        schedule.assign();
+        let broken = schedule.apply_delay(id("FLIGHT_1"), 500);
+        assert!(broken.is_empty());
+
+        assert_eq!(Time(1700), schedule.flights[0].departure_time);
+        assert_eq!(Time(2000), schedule.flights[0].arrival_time);
+        assert_eq!(Delayed, schedule.flights[0].status);
+
+        assert_eq!(Time(2030), schedule.flights[1].departure_time);
+        assert_eq!(Time(2230), schedule.flights[1].arrival_time);
+        assert_eq!(Delayed, schedule.flights[1].status);
+
+        assert_eq!(Time(2260), schedule.flights[2].departure_time);
+        assert_eq!(Time(2510), schedule.flights[2].arrival_time);
+        assert_eq!(Delayed, schedule.flights[2].status);
+    }
+
+    #[test]
+    fn test_delay_aircraft_first_flight_by_leapfrog() {
+        let mut aircraft = HashMap::new();
+        let mut airports = HashMap::new();
+        let mut flights = Vec::new();
+
+        add_airport(&mut airports, "KRK", 30, vec![]);
+        add_airport(&mut airports, "WAW", 30, vec![]);
+        add_airport(&mut airports, "GDN", 30, vec![]);
+        add_airport(&mut airports, "WRO", 30, vec![]);
+
+        add_aircraft(&mut aircraft, "PLANE_1", "KRK", vec![]);
+
+        add_flight(&mut flights, "FLIGHT_1", "KRK", "WRO", 1200, 1500, Some("PLANE_1"), Scheduled);
+        add_flight(&mut flights, "FLIGHT_2", "WRO", "WAW", 1800, 2000, Some("PLANE_1"), Scheduled);
+        add_flight(&mut flights, "FLIGHT_3", "WAW", "GDN", 2100, 2350, Some("PLANE_1"), Scheduled);
+
+        let mut schedule = Schedule::new(aircraft, airports, flights);
+        schedule.assign();
+        let broken = schedule.apply_delay(id("FLIGHT_1"), 1000);
+        assert!(broken.is_empty());
+
+        assert_eq!(Time(2200), schedule.flights[0].departure_time);
+        assert_eq!(Time(2500), schedule.flights[0].arrival_time);
+        assert_eq!(Delayed, schedule.flights[0].status);
+
+        assert_eq!(Time(2530), schedule.flights[1].departure_time);
+        assert_eq!(Time(2730), schedule.flights[1].arrival_time);
+        assert_eq!(Delayed, schedule.flights[1].status);
+
+        assert_eq!(Time(2760), schedule.flights[2].departure_time);
+        assert_eq!(Time(3010), schedule.flights[2].arrival_time);
+        assert_eq!(Delayed, schedule.flights[2].status);
     }
 
     #[test]
