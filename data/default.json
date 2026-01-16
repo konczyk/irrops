@@ -38,7 +38,9 @@
       "departure_time": 100,
       "arrival_time": 200,
       "aircraft_id": "",
-      "status": "Unscheduled"
+      "status": {
+        "Unscheduled": "Waiting"
+      }
     },
     {
       "id": "FL-102",
@@ -47,7 +49,9 @@
       "departure_time": 500,
       "arrival_time": 750,
       "aircraft_id": "",
-      "status": "Unscheduled"
+      "status": {
+        "Unscheduled": "Waiting"
+      }
     },
     {
       "id": "FL-201",
@@ -56,7 +60,9 @@
       "departure_time": 900,
       "arrival_time": 1050,
       "aircraft_id": "",
-      "status": "Unscheduled"
+      "status": {
+        "Unscheduled": "Waiting"
+      }
     }
   ]
 }

@@ -1,11 +1,12 @@
 use crate::aircraft::{Aircraft, AircraftId};
 use crate::airport::{Airport, AirportId, Curfew};
 use crate::flight::FlightStatus::{Delayed, Scheduled, Unscheduled};
-use crate::flight::{Flight, FlightId};
+use crate::flight::{UnscheduledReason, Flight, FlightId};
 use crate::time::Time;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io;
+use crate::flight::UnscheduledReason::{AircraftMaintenance, AirportCurfew, BrokenChain, MaxDelayExceeded};
 
 pub struct Schedule {
     aircraft: HashMap<AircraftId, Aircraft>,
@@ -58,7 +59,7 @@ impl Schedule {
             .collect();
 
         self.flights.iter()
-            .filter(|f| f.status != Unscheduled)
+            .filter(|f| !f.status.is_unscheduled())
             .for_each(|f| {
                 if let Some(ac_id) = &f.aircraft_id {
                     current_locations.insert(ac_id.clone(), f.destination_id.clone());
@@ -89,7 +90,7 @@ impl Schedule {
 
 
         self.flights.iter_mut()
-            .filter(|flight| flight.status == Unscheduled)
+            .filter(|flight| flight.status.is_unscheduled())
             .for_each(|flight| {
                 // collect candidates at the origin airport that are not disrupted
                 let chosen_aircraft = aircraft_by_airport.get(&flight.origin_id)
@@ -157,23 +158,26 @@ impl Schedule {
                 orig_closed || dest_closed
             };
 
-            let mut mark_unscheduled = |flight: &mut Flight| {
-                flight.status = Unscheduled;
+            let mut mark_unscheduled = |flight: &mut Flight, reason: UnscheduledReason| {
+                flight.status = Unscheduled(reason);
                 flight.aircraft_id = None;
                 unscheduled.push(flight.id.clone());
             };
 
             let mut is_broken = false;
             if shift > Self::MAX_DELAY {
-                mark_unscheduled(&mut self.flights[*f_id]);
+                mark_unscheduled(&mut self.flights[*f_id], MaxDelayExceeded);
                 is_broken = true;
             } else {
                 let orig_dep_time = self.flights[*f_id].departure_time;
                 self.flights[*f_id].departure_time += shift;
                 self.flights[*f_id].arrival_time += shift;
                 let arr_time = self.flights[*f_id].arrival_time;
-                if is_ac_disrupted(orig_dep_time, arr_time) || is_ap_disrupted(&self.flights[*f_id], orig_dep_time, arr_time) {
-                    mark_unscheduled(&mut self.flights[*f_id]);
+                if is_ac_disrupted(orig_dep_time, arr_time) {
+                    mark_unscheduled(&mut self.flights[*f_id], AircraftMaintenance);
+                    is_broken = true;
+                } else if is_ap_disrupted(&self.flights[*f_id], orig_dep_time, arr_time) {
+                    mark_unscheduled(&mut self.flights[*f_id], AirportCurfew);
                     is_broken = true;
                 } else {
                     self.flights[*f_id].status = Delayed;
@@ -185,7 +189,7 @@ impl Schedule {
 
                 for flight in self.flights.iter_mut().skip(*f_id + 1).filter(|f| f.aircraft_id.as_ref().map(|x| **x == *ac_id).unwrap_or(false)) {
                     if is_broken {
-                        mark_unscheduled(flight);
+                        mark_unscheduled(flight, BrokenChain);
                         continue;
                     }
                     let len = flight.arrival_time - flight.departure_time;
@@ -195,10 +199,15 @@ impl Schedule {
                     let is_overlapping = flight.departure_time < prev_arrival_time + self.airports.get(&flight.origin_id).map(|d| d.mtt).unwrap();
 
                     let is_ac_disrupted = is_ac_disrupted(flight.departure_time, arr_time);
-                    let is_disrupted = is_ac_disrupted || is_ap_disrupted(&flight, dep_time, arr_time);
 
-                    if is_disrupted || dep_time - flight.departure_time > Time(Self::MAX_DELAY) {
-                        mark_unscheduled(flight);
+                    if is_ac_disrupted {
+                        mark_unscheduled(flight, AircraftMaintenance);
+                        is_broken = true;
+                    } else if is_ap_disrupted(&flight, dep_time, arr_time) {
+                        mark_unscheduled(flight, AirportCurfew);
+                        is_broken = true;
+                    } else if dep_time - flight.departure_time > Time(Self::MAX_DELAY) {
+                        mark_unscheduled(flight, MaxDelayExceeded);
                         is_broken = true;
                     } else if is_overlapping {
                         flight.departure_time = dep_time;
@@ -222,7 +231,7 @@ impl Schedule {
             airport.disruptions.push(Curfew{from, to});
 
             let broken = self.flights.iter()
-                .filter(|f| f.status != Unscheduled)
+                .filter(|f| !f.status.is_unscheduled())
                 .filter(|f| *f.origin_id == *airport_id || *f.destination_id == *airport_id)
                 .filter(|f| airport.disruptions.iter().any(|Curfew{from, to}| Time::is_overlapping(&(f.departure_time, f.arrival_time), &(*from, *to))))
                 .fold(HashMap::new(), |mut acc: HashMap<AircraftId, Time>, f| {
@@ -233,13 +242,17 @@ impl Schedule {
                     acc
                 });
 
-            self.flights.iter_mut().filter(|f| f.status != Unscheduled).for_each(|f| {
-                if let Some(ac_id) = &f.aircraft_id {
+            let mut counter: HashMap<AircraftId, usize> = HashMap::new();
+            self.flights.iter_mut().filter(|f| !f.status.is_unscheduled()).for_each(|f| {
+                if let Some(ac_id) = &f.aircraft_id.clone() {
                     let broken_time = broken.get(ac_id);
                     if let Some(time) = broken_time {
                         if f.departure_time >= *time {
+                            counter.entry(ac_id.clone())
+                                .and_modify(|e| *e += 1)
+                                .or_insert(0);
                             f.aircraft_id = None;
-                            f.status = Unscheduled;
+                            f.status = if counter.get(&ac_id.clone()).map_or(true, |x| *x == 0) { Unscheduled(AirportCurfew) } else { Unscheduled(BrokenChain) };
                             unscheduled.push(f.id.clone());
                         }
                     }
@@ -258,6 +271,7 @@ mod tests {
     use crate::airport::Airport;
     use crate::flight::FlightStatus;
     use std::sync::Arc;
+    use crate::flight::UnscheduledReason::Waiting;
 
     pub(crate) fn id(s: &str) -> Arc<str> { Arc::from(s) }
 
@@ -317,8 +331,8 @@ mod tests {
 
         add_aircraft(&mut aircraft, "PLANE_1", "KRK", vec![]);
 
-        add_flight(&mut flights, "FLIGHT_1", "KRK", "WAW", 100, 200, None, Unscheduled);
-        add_flight(&mut flights, "FLIGHT_2", "KRK", "GDN", 300, 400, None, Unscheduled);
+        add_flight(&mut flights, "FLIGHT_1", "KRK", "WAW", 100, 200, None, Unscheduled(Waiting));
+        add_flight(&mut flights, "FLIGHT_2", "KRK", "GDN", 300, 400, None, Unscheduled(Waiting));
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
@@ -339,8 +353,8 @@ mod tests {
 
         add_aircraft(&mut aircraft, "PLANE_1", "KRK", vec![]);
 
-        add_flight(&mut flights, "FLIGHT_1", "KRK", "WAW", 100, 200, None, Unscheduled);
-        add_flight(&mut flights, "FLIGHT_2", "WAW", "GDN", 220, 300, None, Unscheduled);
+        add_flight(&mut flights, "FLIGHT_1", "KRK", "WAW", 100, 200, None, Unscheduled(Waiting));
+        add_flight(&mut flights, "FLIGHT_2", "WAW", "GDN", 220, 300, None, Unscheduled(Waiting));
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
@@ -361,8 +375,8 @@ mod tests {
 
         add_aircraft(&mut aircraft, "PLANE_1", "KRK", vec![]);
 
-        add_flight(&mut flights, "FLIGHT_1", "KRK", "WAW", 100, 200, None, Unscheduled);
-        add_flight(&mut flights, "FLIGHT_2", "WAW", "GDN", 240, 300, None, Unscheduled);
+        add_flight(&mut flights, "FLIGHT_1", "KRK", "WAW", 100, 200, None, Unscheduled(Waiting));
+        add_flight(&mut flights, "FLIGHT_2", "WAW", "GDN", 240, 300, None, Unscheduled(Waiting));
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
@@ -383,7 +397,7 @@ mod tests {
         add_aircraft(&mut aircraft, "A", "GDN", vec![]);
         add_aircraft(&mut aircraft, "B", "GDN", vec![]);
 
-        add_flight(&mut flights, "FLIGHT_1", "GDN", "WAW", 100, 200, None, Unscheduled);
+        add_flight(&mut flights, "FLIGHT_1", "GDN", "WAW", 100, 200, None, Unscheduled(Waiting));
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
@@ -402,7 +416,7 @@ mod tests {
 
         add_aircraft(&mut aircraft, "PLANE_1", "KRK", vec![availability(150, 250)]);
 
-        add_flight(&mut flights, "FLIGHT_1", "KRK", "WAW", 100, 200, None, Unscheduled);
+        add_flight(&mut flights, "FLIGHT_1", "KRK", "WAW", 100, 200, None, Unscheduled(Waiting));
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
@@ -423,8 +437,8 @@ mod tests {
 
         add_aircraft(&mut aircraft, "PLANE_1", "KRK", vec![]);
 
-        add_flight(&mut flights, "FLIGHT_1", "KRK", "WAW", 100, 200, None, Unscheduled);
-        add_flight(&mut flights, "FLIGHT_1", "WAW", "GDN", 230, 300, None, Unscheduled);
+        add_flight(&mut flights, "FLIGHT_1", "KRK", "WAW", 100, 200, None, Unscheduled(Waiting));
+        add_flight(&mut flights, "FLIGHT_1", "WAW", "GDN", 230, 300, None, Unscheduled(Waiting));
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
@@ -445,8 +459,8 @@ mod tests {
 
         add_aircraft(&mut aircraft, "PLANE_1", "KRK", vec![]);
 
-        add_flight(&mut flights, "FLIGHT_1", "KRK", "WAW", 1200, 1500, None, Unscheduled);
-        add_flight(&mut flights, "FLIGHT_1", "KRK", "GDN", 1100, 1800, None, Unscheduled);
+        add_flight(&mut flights, "FLIGHT_1", "KRK", "WAW", 1200, 1500, None, Unscheduled(Waiting));
+        add_flight(&mut flights, "FLIGHT_1", "KRK", "GDN", 1100, 1800, None, Unscheduled(Waiting));
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
@@ -469,10 +483,10 @@ mod tests {
         add_aircraft(&mut aircraft, "PLANE_1", "KRK", vec![]);
         add_aircraft(&mut aircraft, "PLANE_2", "WAW", vec![]);
 
-        add_flight(&mut flights, "FLIGHT_1", "KRK", "WRO", 1200, 1500, None, Unscheduled);
-        add_flight(&mut flights, "FLIGHT_2", "WRO", "WAW", 1800, 2000, None, Unscheduled);
-        add_flight(&mut flights, "FLIGHT_3", "WAW", "GDN", 2100, 2350, None, Unscheduled);
-        add_flight(&mut flights, "FLIGHT_4", "WAW", "GDN", 2100, 2300, None, Unscheduled);
+        add_flight(&mut flights, "FLIGHT_1", "KRK", "WRO", 1200, 1500, None, Unscheduled(Waiting));
+        add_flight(&mut flights, "FLIGHT_2", "WRO", "WAW", 1800, 2000, None, Unscheduled(Waiting));
+        add_flight(&mut flights, "FLIGHT_3", "WAW", "GDN", 2100, 2350, None, Unscheduled(Waiting));
+        add_flight(&mut flights, "FLIGHT_4", "WAW", "GDN", 2100, 2300, None, Unscheduled(Waiting));
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
@@ -515,15 +529,15 @@ mod tests {
 
         assert_eq!(Time(1700), schedule.flights[0].departure_time);
         assert_eq!(Time(2000), schedule.flights[0].arrival_time);
-        assert_eq!(Unscheduled, schedule.flights[0].status);
+        assert_eq!(Unscheduled(AircraftMaintenance), schedule.flights[0].status);
 
         assert_eq!(Time(1800), schedule.flights[1].departure_time);
         assert_eq!(Time(2000), schedule.flights[1].arrival_time);
-        assert_eq!(Unscheduled, schedule.flights[1].status);
+        assert_eq!(Unscheduled(BrokenChain), schedule.flights[1].status);
 
         assert_eq!(Time(2100), schedule.flights[2].departure_time);
         assert_eq!(Time(2350), schedule.flights[2].arrival_time);
-        assert_eq!(Unscheduled, schedule.flights[2].status);
+        assert_eq!(Unscheduled(BrokenChain), schedule.flights[2].status);
     }
 
     #[test]
@@ -554,11 +568,11 @@ mod tests {
 
         assert_eq!(Time(1800), schedule.flights[1].departure_time);
         assert_eq!(Time(2000), schedule.flights[1].arrival_time);
-        assert_eq!(Unscheduled, schedule.flights[1].status);
+        assert_eq!(Unscheduled(AircraftMaintenance), schedule.flights[1].status);
 
         assert_eq!(Time(2100), schedule.flights[2].departure_time);
         assert_eq!(Time(2350), schedule.flights[2].arrival_time);
-        assert_eq!(Unscheduled, schedule.flights[2].status);
+        assert_eq!(Unscheduled(BrokenChain), schedule.flights[2].status);
     }
 
     #[test]
@@ -586,15 +600,15 @@ mod tests {
 
         assert_eq!(Time(1350), schedule.flights[0].departure_time);
         assert_eq!(Time(1650), schedule.flights[0].arrival_time);
-        assert_eq!(Unscheduled, schedule.flights[0].status);
+        assert_eq!(Unscheduled(AirportCurfew), schedule.flights[0].status);
 
         assert_eq!(Time(1800), schedule.flights[1].departure_time);
         assert_eq!(Time(2000), schedule.flights[1].arrival_time);
-        assert_eq!(Unscheduled, schedule.flights[1].status);
+        assert_eq!(Unscheduled(BrokenChain), schedule.flights[1].status);
 
         assert_eq!(Time(2100), schedule.flights[2].departure_time);
         assert_eq!(Time(2350), schedule.flights[2].arrival_time);
-        assert_eq!(Unscheduled, schedule.flights[2].status);
+        assert_eq!(Unscheduled(BrokenChain), schedule.flights[2].status);
     }
 
     #[test]
@@ -627,11 +641,11 @@ mod tests {
 
         assert_eq!(Time(1800), schedule.flights[1].departure_time);
         assert_eq!(Time(2000), schedule.flights[1].arrival_time);
-        assert_eq!(Unscheduled, schedule.flights[1].status);
+        assert_eq!(Unscheduled(AirportCurfew), schedule.flights[1].status);
 
         assert_eq!(Time(2100), schedule.flights[2].departure_time);
         assert_eq!(Time(2350), schedule.flights[2].arrival_time);
-        assert_eq!(Unscheduled, schedule.flights[2].status);
+        assert_eq!(Unscheduled(BrokenChain), schedule.flights[2].status);
     }
 
     #[test]
@@ -658,15 +672,15 @@ mod tests {
 
         assert_eq!(Time(1200), schedule.flights[0].departure_time);
         assert_eq!(Time(1500), schedule.flights[0].arrival_time);
-        assert_eq!(Unscheduled, schedule.flights[0].status);
+        assert_eq!(Unscheduled(MaxDelayExceeded), schedule.flights[0].status);
 
         assert_eq!(Time(1800), schedule.flights[1].departure_time);
         assert_eq!(Time(2000), schedule.flights[1].arrival_time);
-        assert_eq!(Unscheduled, schedule.flights[1].status);
+        assert_eq!(Unscheduled(BrokenChain), schedule.flights[1].status);
 
         assert_eq!(Time(2100), schedule.flights[2].departure_time);
         assert_eq!(Time(2350), schedule.flights[2].arrival_time);
-        assert_eq!(Unscheduled, schedule.flights[2].status);
+        assert_eq!(Unscheduled(BrokenChain), schedule.flights[2].status);
     }
 
     #[test]
@@ -698,11 +712,11 @@ mod tests {
 
         assert_eq!(Time(305), schedule.flights[1].departure_time);
         assert_eq!(Time(500), schedule.flights[1].arrival_time);
-        assert_eq!(Unscheduled, schedule.flights[1].status);
+        assert_eq!(Unscheduled(MaxDelayExceeded), schedule.flights[1].status);
 
         assert_eq!(Time(600), schedule.flights[2].departure_time);
         assert_eq!(Time(700), schedule.flights[2].arrival_time);
-        assert_eq!(Unscheduled, schedule.flights[2].status);
+        assert_eq!(Unscheduled(BrokenChain), schedule.flights[2].status);
     }
 
     #[test]
@@ -833,12 +847,12 @@ mod tests {
         assert_eq!(None, schedule.flights[0].aircraft_id);
         assert_eq!(Time(200) + 400, schedule.flights[0].departure_time);
         assert_eq!(Time(500) + 400, schedule.flights[0].arrival_time);
-        assert_eq!(Unscheduled, schedule.flights[0].status);
+        assert_eq!(Unscheduled(AircraftMaintenance), schedule.flights[0].status);
 
         assert_eq!(None, schedule.flights[1].aircraft_id);
         assert_eq!(Time(1800), schedule.flights[1].departure_time);
         assert_eq!(Time(2000), schedule.flights[1].arrival_time);
-        assert_eq!(Unscheduled, schedule.flights[1].status);
+        assert_eq!(Unscheduled(BrokenChain), schedule.flights[1].status);
 
         schedule.assign();
 
@@ -880,17 +894,17 @@ mod tests {
         assert_eq!(None, schedule.flights[1].aircraft_id);
         assert_eq!(Time(400), schedule.flights[1].departure_time);
         assert_eq!(Time(500), schedule.flights[1].arrival_time);
-        assert_eq!(Unscheduled, schedule.flights[1].status);
+        assert_eq!(Unscheduled(AirportCurfew), schedule.flights[1].status);
 
         assert_eq!(None, schedule.flights[2].aircraft_id);
         assert_eq!(Time(600), schedule.flights[2].departure_time);
         assert_eq!(Time(700), schedule.flights[2].arrival_time);
-        assert_eq!(Unscheduled, schedule.flights[2].status);
+        assert_eq!(Unscheduled(BrokenChain), schedule.flights[2].status);
 
         schedule.assign();
         assert_eq!(Scheduled, schedule.flights[0].status);
-        assert_eq!(Unscheduled, schedule.flights[1].status);
-        assert_eq!(Unscheduled, schedule.flights[2].status);
+        assert_eq!(Unscheduled(AirportCurfew), schedule.flights[1].status);
+        assert_eq!(Unscheduled(BrokenChain), schedule.flights[2].status);
     }
 
 }
@@ -901,6 +915,7 @@ mod proptests {
     use super::*;
     use proptest::prelude::*;
     use std::sync::Arc;
+    use crate::flight::UnscheduledReason::Waiting;
 
     fn arb_id(prefix: &'static str) -> impl Strategy<Value=Arc<str>> {
         prop_oneof![
@@ -924,7 +939,7 @@ mod proptests {
             departure_time: Time(dep),
             arrival_time: Time(dep) + dur,
             aircraft_id: None,
-            status: Unscheduled,
+            status: Unscheduled(Waiting),
         })
     }
 

@@ -9,11 +9,29 @@ use tabled::Tabled;
 
 pub type FlightId = Arc<str>;
 
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub enum UnscheduledReason {
+    Waiting,
+    MaxDelayExceeded,
+    AirportCurfew,
+    AircraftMaintenance,
+    BrokenChain,
+}
+
 #[derive(Debug, PartialEq, Serialize, Deserialize, Tabled)]
 pub enum FlightStatus {
-    Unscheduled,
+    Unscheduled(UnscheduledReason),
     Scheduled,
     Delayed,
+}
+
+impl FlightStatus {
+    pub fn is_unscheduled(&self) -> bool {
+        match self {
+            FlightStatus::Unscheduled(_) => true,
+            _ => false,
+        }
+    }
 }
 
 impl fmt::Display for FlightStatus {
@@ -21,7 +39,7 @@ impl fmt::Display for FlightStatus {
         let s = match self {
             FlightStatus::Scheduled => "Scheduled".green(),
             FlightStatus::Delayed => "Delayed".yellow(),
-            FlightStatus::Unscheduled => "Unscheduled".red(),
+            FlightStatus::Unscheduled(_) => "Unscheduled".red(),
         };
         write!(f, "{}", s)
     }

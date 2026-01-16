@@ -10,6 +10,7 @@ use std::sync::Arc;
 use tabled::settings::Style;
 use crate::flight::Flight;
 use crate::flight::FlightStatus::{Delayed, Scheduled, Unscheduled};
+use crate::flight::UnscheduledReason::*;
 use crate::time::Time;
 
 mod aircraft;
@@ -118,7 +119,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             } else {
                                 status = match *part {
-                                    "u" | "unscheduled" => Some(Unscheduled),
+                                    "u" | "unscheduled" => Some(Unscheduled(Waiting)),
                                     "s" | "scheduled" => Some(Scheduled),
                                     "d" | "delayed" => Some(Delayed),
                                     _ => None,
@@ -166,25 +167,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("Recovery cycle complete.");
                     },
                     "stats" => {
-                        let mut s = 0; // Scheduled
-                        let mut d = 0; // Delayed
-                        let mut u = 0; // Unscheduled
+                        let mut s = 0;
+                        let mut d = 0;
+                        let mut uw = 0;
+                        let mut umde = 0;
+                        let mut uam = 0;
+                        let mut uac = 0;
+                        let mut ubc = 0;
                         let total = schedule.flights.len();
 
                         for f in &schedule.flights {
                             match f.status {
                                 Scheduled => s += 1,
                                 Delayed => d += 1,
-                                Unscheduled => u += 1,
+                                Unscheduled(Waiting) => uw += 1,
+                                Unscheduled(MaxDelayExceeded) => umde += 1,
+                                Unscheduled(AirportCurfew) => uac += 1,
+                                Unscheduled(AircraftMaintenance) => uam += 1,
+                                Unscheduled(BrokenChain) => ubc += 1,
                             }
                         }
 
                         println!("\nFleet Utilization Summary:");
                         println!("---------------------------");
-                        // Using colored here would be a nice touch based on our previous setup!
-                        println!("Scheduled:   {} ({:.1}%)", s, (s as f64 / total as f64) * 100.0);
-                        println!("Delayed:     {} ({:.1}%)", d, (d as f64 / total as f64) * 100.0);
-                        println!("Unscheduled: {} ({:.1}%)", u, (u as f64 / total as f64) * 100.0);
+                        println!("Scheduled:                          {} ({:.1}%)", s, (s as f64 / total as f64) * 100.0);
+                        println!("Delayed:                            {} ({:.1}%)", d, (d as f64 / total as f64) * 100.0);
+                        println!("Unscheduled (Waiting):              {} ({:.1}%)", uw, (uw as f64 / total as f64) * 100.0);
+                        println!("Unscheduled (Max Delay Exceeded):   {} ({:.1}%)", umde, (umde as f64 / total as f64) * 100.0);
+                        println!("Unscheduled (Airport Curfew):       {} ({:.1}%)", uac, (uac as f64 / total as f64) * 100.0);
+                        println!("Unscheduled (Aircraft Maintenance): {} ({:.1}%)", uam, (uam as f64 / total as f64) * 100.0);
+                        println!("Unscheduled (Broken Chain):         {} ({:.1}%)", ubc, (ubc as f64 / total as f64) * 100.0);
                         println!("---------------------------");
                         println!("Total Flights: {}\n", total);
                     },
