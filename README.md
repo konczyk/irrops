@@ -12,7 +12,7 @@ Includes a simple interactive TUI for exploring schedules and simulating disrupt
 - Deterministic aircraft assignment
 - Airport continuity and minimum turn times (MTT)
 - Absolute-time scheduling (multi-day support)
-- Aircraft availability disruptions
+- Aircraft availability disruptions with an optional location constraint
 - Incremental delay propagation
 - Partial schedule repair via reassignment
 - No global re-optimization
@@ -32,53 +32,67 @@ cargo test
 cargo run -- --scenario data/default.json
 ```
 
-Commands:
-
-- `ls [status]` - list (optionally filtered) flights and their current status
-- `delay <flight_id> <minutes>` - inject a delay into a flight
-- `curfew <airport_id> <minutes> <minutes>` - Inject a curfew into an airport
-- `recover` - re-run assignment to repair unscheduled flights
-- `help | ?` - display help
-- `exit` / `quit` - leave the simulator
-
 ## Sample TUI session
 
 ```shell
-cargo run --
-Tower online. Loaded flights from data/default.json
+cargo run -r -- -s data/stress_test.json 
 
-> ls
-╭────────┬─────────────┬────────┬─────────────┬────────────────┬──────────────┬───────────╮
-│ id     │ aircraft_id │ origin │ destination │ departure_time │ arrival_time │ status    │
-├────────┼─────────────┼────────┼─────────────┼────────────────┼──────────────┼───────────┤
-│ FL-101 │ ALPHA       │ WAW    │ KRK         │ DAY1 01:40     │ DAY1 03:20   │ Scheduled │
-│ FL-102 │ ALPHA       │ KRK    │ GDN         │ DAY1 08:20     │ DAY1 12:30   │ Scheduled │
-│ FL-201 │ ALPHA       │ GDN    │ WAW         │ DAY1 15:00     │ DAY1 17:30   │ Scheduled │
-╰────────┴─────────────┴────────┴─────────────┴────────────────┴──────────────┴───────────╯
+Tower online. Loaded flights from data/stress_test.json
+>> ?
 
-> delay FL-101 200
-Applied delay. 3 flights became unscheduled.
+Available Commands:
+  ls [status]         - List all flights in a table or filter by status: u - unscheduled, s - scheduled, d - delayed
+  delay <id> <m>      - Inject <m> minutes of delay into flight <id>
+  curfew <id> <m> <m> - Inject a curfew from <m> to <m> minutes into airport <id>
+  recover             - Re-run assignment to repair unscheduled flights
+  stats               - Display summary statistics
+  help / ?            - Show this help menu
+  exit / quit         - Exit the simulator
+  
+>> stats
 
-> ls
-╭────────┬─────────────┬────────┬─────────────┬────────────────┬──────────────┬─────────────╮
-│ id     │ aircraft_id │ origin │ destination │ departure_time │ arrival_time │ status      │
-├────────┼─────────────┼────────┼─────────────┼────────────────┼──────────────┼─────────────┤
-│ FL-101 │ ---         │ WAW    │ KRK         │ DAY1 05:00     │ DAY1 06:40   │ Unscheduled │
-│ FL-102 │ ---         │ KRK    │ GDN         │ DAY1 08:20     │ DAY1 12:30   │ Unscheduled │
-│ FL-201 │ ---         │ GDN    │ WAW         │ DAY1 15:00     │ DAY1 17:30   │ Unscheduled │
-╰────────┴─────────────┴────────┴─────────────┴────────────────┴──────────────┴─────────────╯
+Fleet Utilization Summary:
+---------------------------
+Scheduled:                          4724 (94.5%)
+Delayed:                            0 (0.0%)
+Unscheduled (Waiting):              276 (5.5%)
+Unscheduled (Max Delay Exceeded):   0 (0.0%)
+Unscheduled (Airport Curfew):       0 (0.0%)
+Unscheduled (Aircraft Maintenance): 0 (0.0%)
+Unscheduled (Broken Chain):         0 (0.0%)
+---------------------------
+Total Flights: 5000
 
-> recover 
+>> delay FL_1911 1000
+Applied delay. 1 flights became unscheduled.
+>> stats
+
+Fleet Utilization Summary:
+---------------------------
+Scheduled:                          4713 (94.3%)
+Delayed:                            10 (0.2%)
+Unscheduled (Waiting):              276 (5.5%)
+Unscheduled (Max Delay Exceeded):   0 (0.0%)
+Unscheduled (Airport Curfew):       1 (0.0%)
+Unscheduled (Aircraft Maintenance): 0 (0.0%)
+Unscheduled (Broken Chain):         0 (0.0%)
+---------------------------
+Total Flights: 5000
+
+>> recover
 Recovery cycle complete.
+>> stats
 
-> ls
-╭────────┬─────────────┬────────┬─────────────┬────────────────┬──────────────┬───────────╮
-│ id     │ aircraft_id │ origin │ destination │ departure_time │ arrival_time │ status    │
-├────────┼─────────────┼────────┼─────────────┼────────────────┼──────────────┼───────────┤
-│ FL-101 │ BRAVO       │ WAW    │ KRK         │ DAY1 05:00     │ DAY1 06:40   │ Scheduled │
-│ FL-102 │ BRAVO       │ KRK    │ GDN         │ DAY1 08:20     │ DAY1 12:30   │ Scheduled │
-│ FL-201 │ BRAVO       │ GDN    │ WAW         │ DAY1 15:00     │ DAY1 17:30   │ Scheduled │
-╰────────┴─────────────┴────────┴─────────────┴────────────────┴──────────────┴───────────╯
+Fleet Utilization Summary:
+---------------------------
+Scheduled:                          4731 (94.6%)
+Delayed:                            10 (0.2%)
+Unscheduled (Waiting):              258 (5.2%)
+Unscheduled (Max Delay Exceeded):   0 (0.0%)
+Unscheduled (Airport Curfew):       1 (0.0%)
+Unscheduled (Aircraft Maintenance): 0 (0.0%)
+Unscheduled (Broken Chain):         0 (0.0%)
+---------------------------
+Total Flights: 5000
 
-> 
 ```

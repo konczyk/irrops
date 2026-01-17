@@ -7,6 +7,7 @@ use std::sync::Arc;
 pub struct Availability {
     pub from: Time,
     pub to: Time,
+    pub location_id: Option<AirportId>
 }
 
 pub type AircraftId = Arc<str>;
