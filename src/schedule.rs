@@ -63,6 +63,10 @@ impl Schedule {
         }).unwrap_or(false)
     }
 
+    fn get_ready_time(airports: &HashMap<AirportId, Airport>, arrival_time: Time, airport_id: &AirportId) -> Time {
+        arrival_time + airports.get(airport_id).map(|x| x.mtt).unwrap_or(0)
+    }
+
     pub fn assign(&mut self)  {
         let mut sorted_ids = self.aircraft.keys().collect::<Vec<&AircraftId>>();
         sorted_ids.sort();
@@ -75,7 +79,7 @@ impl Schedule {
             .filter(|f| !f.status.is_unscheduled())
             .for_each(|f| {
                 if let Some(ac_id) = &f.aircraft_id {
-                    current_locations.insert(ac_id.clone(), (f.destination_id.clone(), f.arrival_time + self.airports.get(&f.destination_id).map(|x| x.mtt).unwrap_or(0)));
+                    current_locations.insert(ac_id.clone(), (f.destination_id.clone(), Self::get_ready_time(&self.airports, f.arrival_time, &f.destination_id)));
                 }
             });
 
@@ -93,7 +97,7 @@ impl Schedule {
         // collect disruptions due to currently scheduled flights
         let mut busy = HashMap::<AircraftId, Vec<(Time, Time)>>::new();
         self.flights
-            .iter().map(|f| (f.aircraft_id.as_ref(), f.departure_time, f.arrival_time + self.airports.get(&f.destination_id).map(|d| d.mtt).unwrap_or(0)))
+            .iter().map(|f| (f.aircraft_id.as_ref(), f.departure_time, Self::get_ready_time(&self.airports, f.arrival_time, &f.destination_id)))
             .filter_map(|(maybe_id, dep, arr)| maybe_id.map(|id| (id.clone(), (dep, arr))))
             .for_each(|(id, val)| {
                 busy.entry(id)
@@ -147,21 +151,21 @@ impl Schedule {
                         .and_modify(|val| val.retain(|id| **id != aircraft.id));
                     current_locations.insert(
                         aircraft.id.clone(),
-                        (flight.destination_id.clone(), flight.arrival_time + self.airports.get(&flight.destination_id).map(|x| x.mtt).unwrap_or(0))
+                        (flight.destination_id.clone(), Self::get_ready_time(&self.airports, flight.arrival_time, &flight.destination_id))
                     );
                 }
             })
     }
 
-    pub fn apply_delay(&mut self, flight_id: FlightId, shift: u64) -> Vec<(FlightId, UnscheduledReason)> {
-        let mut unscheduled = vec![];
+    pub fn apply_delay(&mut self, flight_id: FlightId, shift: u64) -> (Vec<(FlightId, UnscheduledReason)>, Vec<FlightId>) {
+        let mut result = (vec![], vec![]);
         if shift == 0 {
-            return unscheduled;
+            return result;
         }
 
         let idx = self.flights_index.get(&flight_id);
-        let result = idx.and_then(|i| Some((i, self.flights[*i].aircraft_id.as_ref().map(|x| x.clone()))));
-        if let Some((f_id, ac_id)) = result {
+        let flight_aircraft = idx.and_then(|i| Some((i, self.flights[*i].aircraft_id.as_ref().map(|x| x.clone()))));
+        if let Some((f_id, ac_id)) = flight_aircraft {
             let empty_ac_vec = vec![];
             let ac_disruptions = ac_id.as_ref().and_then(|i| self.aircraft.get(i)).map(|a| a.disruptions.as_slice()).unwrap_or(&empty_ac_vec);
 
@@ -179,7 +183,7 @@ impl Schedule {
 
             let mut is_broken = false;
             if shift > Self::MAX_DELAY {
-                unscheduled.push((self.flights[*f_id].id.clone(), MaxDelayExceeded));
+                result.0.push((self.flights[*f_id].id.clone(), MaxDelayExceeded));
                 is_broken = true;
             } else {
 
@@ -188,13 +192,14 @@ impl Schedule {
                 self.flights[*f_id].arrival_time += shift;
                 let shifted_arr_time = self.flights[*f_id].arrival_time;
                 if is_ac_disrupted(orig_dep_time, shifted_arr_time) {
-                    unscheduled.push((self.flights[*f_id].id.clone(), AircraftMaintenance));
+                    result.0.push((self.flights[*f_id].id.clone(), AircraftMaintenance));
                     is_broken = true;
                 } else if is_ap_disrupted(&self.flights[*f_id], orig_dep_time, shifted_arr_time) {
-                    unscheduled.push((self.flights[*f_id].id.clone(), AirportCurfew));
+                    result.0.push((self.flights[*f_id].id.clone(), AirportCurfew));
                     is_broken = true;
                 } else {
                     self.flights[*f_id].status = Delayed;
+                    result.1.push(self.flights[*f_id].id.clone());
                 }
             }
 
@@ -204,26 +209,26 @@ impl Schedule {
 
                 for flight in self.flights.iter_mut().skip(*f_id + 1).filter(|f| f.aircraft_id.as_ref().map(|x| **x == *ac_id).unwrap_or(false)) {
                     if is_broken {
-                        unscheduled.push((flight.id.clone(), BrokenChain));
+                        result.0.push((flight.id.clone(), BrokenChain));
                         continue;
                     }
                     let len = flight.arrival_time - flight.departure_time;
-                    let ready_at = prev_arrival_time + self.airports.get(&flight.origin_id).map(|d| d.mtt).unwrap_or(0);
+                    let ready_at = Self::get_ready_time(&self.airports, prev_arrival_time, &flight.origin_id);
                     let dep_time = ready_at.max(flight.departure_time);
                     let arr_time = dep_time + len;
-                    let is_overlapping = flight.departure_time < prev_arrival_time + self.airports.get(&flight.origin_id).map(|d| d.mtt).unwrap_or(0);
+                    let is_overlapping = flight.departure_time < Self::get_ready_time(&self.airports, prev_arrival_time, &flight.origin_id);
 
                     let is_ac_disrupted = is_ac_disrupted(flight.departure_time, arr_time);
                     let is_at_wrong_airport = Self::is_at_wrong_airport(ac_disruptions, flight.departure_time, Some(&(prev_destination_id.clone(), prev_arrival_time)));
 
                     if is_ac_disrupted || is_at_wrong_airport {
-                        unscheduled.push((flight.id.clone(), AircraftMaintenance));
+                        result.0.push((flight.id.clone(), AircraftMaintenance));
                         is_broken = true;
                     } else if is_ap_disrupted(&flight, dep_time, arr_time) {
-                        unscheduled.push((flight.id.clone(), AirportCurfew));
+                        result.0.push((flight.id.clone(), AirportCurfew));
                         is_broken = true;
                     } else if dep_time - flight.departure_time > Time(Self::MAX_DELAY) {
-                        unscheduled.push((flight.id.clone(), MaxDelayExceeded));
+                        result.0.push((flight.id.clone(), MaxDelayExceeded));
                         is_broken = true;
                     } else if is_overlapping {
                         flight.departure_time = dep_time;
@@ -231,17 +236,18 @@ impl Schedule {
                         flight.status = Delayed;
                         prev_arrival_time = flight.arrival_time;
                         prev_destination_id = flight.destination_id.clone();
+                        result.1.push(flight.id.clone());
                     } else {
                         break;
                     }
                 }
             }
         }
-        unscheduled.iter().for_each(|(f_id, reason)| {
+        result.0.iter().for_each(|(f_id, reason)| {
             self.unschedule(f_id, *reason);
         });
 
-        unscheduled
+        result
     }
 
     pub fn apply_curfew(&mut self, airport_id: AirportId, from: Time, to: Time) -> Vec<(FlightId, UnscheduledReason)> {
@@ -568,7 +574,7 @@ mod tests {
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
-        let broken = schedule.apply_delay(id("FLIGHT_1"), 500).iter().map(|(x, _)| x.clone()).collect::<Vec<FlightId>>();
+        let broken = schedule.apply_delay(id("FLIGHT_1"), 500).0.iter().map(|(x, _)| x.clone()).collect::<Vec<FlightId>>();
         assert_eq!(vec![id("FLIGHT_1"), id("FLIGHT_2"), id("FLIGHT_3")], broken);
 
         assert_eq!(Time(1700), schedule.flights[0].departure_time);
@@ -603,7 +609,7 @@ mod tests {
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
-        let broken = schedule.apply_delay(id("FLIGHT_1"), 500).iter().map(|(x, _)| x.clone()).collect::<Vec<FlightId>>();
+        let broken = schedule.apply_delay(id("FLIGHT_1"), 500).0.iter().map(|(x, _)| x.clone()).collect::<Vec<FlightId>>();
         assert_eq!(vec![id("FLIGHT_2"), id("FLIGHT_3")], broken);
 
         assert_eq!(Time(1200) + 500, schedule.flights[0].departure_time);
@@ -639,7 +645,7 @@ mod tests {
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
-        let broken = schedule.apply_delay(id("FLIGHT_1"), 150).iter().map(|(x, _)| x.clone()).collect::<Vec<FlightId>>();
+        let broken = schedule.apply_delay(id("FLIGHT_1"), 150).0.iter().map(|(x, _)| x.clone()).collect::<Vec<FlightId>>();
         assert_eq!(vec![id("FLIGHT_1"), id("FLIGHT_2"), id("FLIGHT_3")], broken);
 
         assert_eq!(Time(1350), schedule.flights[0].departure_time);
@@ -676,7 +682,7 @@ mod tests {
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
-        let broken = schedule.apply_delay(id("FLIGHT_1"), 500).iter().map(|(x, _)| x.clone()).collect::<Vec<FlightId>>();
+        let broken = schedule.apply_delay(id("FLIGHT_1"), 500).0.iter().map(|(x, _)| x.clone()).collect::<Vec<FlightId>>();
         assert_eq!(vec![id("FLIGHT_2"), id("FLIGHT_3")], broken);
 
         assert_eq!(Time(1200) + 500, schedule.flights[0].departure_time);
@@ -711,7 +717,7 @@ mod tests {
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
-        let broken = schedule.apply_delay(id("FLIGHT_1"), 2050).iter().map(|(x, _)| x.clone()).collect::<Vec<FlightId>>();
+        let broken = schedule.apply_delay(id("FLIGHT_1"), 2050).0.iter().map(|(x, _)| x.clone()).collect::<Vec<FlightId>>();
         assert_eq!(vec![id("FLIGHT_1"), id("FLIGHT_2"), id("FLIGHT_3")], broken);
 
         assert_eq!(Time(1200), schedule.flights[0].departure_time);
@@ -747,8 +753,10 @@ mod tests {
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
-        let broken = schedule.apply_delay(id("FLIGHT_1"), 1999).iter().map(|(x, _)| x.clone()).collect::<Vec<FlightId>>();
+        let result = schedule.apply_delay(id("FLIGHT_1"), 1999);
+        let broken = result.0.iter().map(|(x, _)| x.clone()).collect::<Vec<FlightId>>();
         assert_eq!(vec![id("FLIGHT_2"), id("FLIGHT_3")], broken);
+        assert_eq!(vec![id("FLIGHT_1")], result.1);
 
         assert_eq!(Time(200) + 1999, schedule.flights[0].departure_time);
         assert_eq!(Time(300) + 1999, schedule.flights[0].arrival_time);
@@ -782,8 +790,9 @@ mod tests {
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
-        let broken = schedule.apply_delay(id("FLIGHT_1"), 100);
-        assert!(broken.is_empty());
+        let result = schedule.apply_delay(id("FLIGHT_1"), 100);
+        assert!(result.0.is_empty());
+        assert_eq!(vec![id("FLIGHT_1")], result.1);
 
         assert_eq!(Time(1300), schedule.flights[0].departure_time);
         assert_eq!(Time(1600), schedule.flights[0].arrival_time);
@@ -817,8 +826,9 @@ mod tests {
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
-        let broken = schedule.apply_delay(id("FLIGHT_1"), 500);
-        assert!(broken.is_empty());
+        let result = schedule.apply_delay(id("FLIGHT_1"), 500);
+        assert!(result.0.is_empty());
+        assert_eq!(vec![id("FLIGHT_1"), id("FLIGHT_2"), id("FLIGHT_3")], result.1);
 
         assert_eq!(Time(1700), schedule.flights[0].departure_time);
         assert_eq!(Time(2000), schedule.flights[0].arrival_time);
@@ -852,8 +862,9 @@ mod tests {
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
-        let broken = schedule.apply_delay(id("FLIGHT_1"), 1000);
-        assert!(broken.is_empty());
+        let result = schedule.apply_delay(id("FLIGHT_1"), 1000);
+        assert!(result.0.is_empty());
+        assert_eq!(vec![id("FLIGHT_1"), id("FLIGHT_2"), id("FLIGHT_3")], result.1);
 
         assert_eq!(Time(2200), schedule.flights[0].departure_time);
         assert_eq!(Time(2500), schedule.flights[0].arrival_time);
@@ -885,8 +896,10 @@ mod tests {
         add_flight(&mut flights, "FLIGHT_2", "WRO", "WAW", 1800, 2000, Some("PLANE_1"), Scheduled);
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
-        let broken = schedule.apply_delay(id("FLIGHT_1"), 50).iter().map(|(x, _)| x.clone()).collect::<Vec<FlightId>>();
+        let result = schedule.apply_delay(id("FLIGHT_1"), 50);
+        let broken = result.0.iter().map(|(x, _)| x.clone()).collect::<Vec<FlightId>>();
         assert_eq!(vec![id("FLIGHT_2")],  broken);
+        assert_eq!(vec![id("FLIGHT_1")], result.1);
 
         assert_eq!(Time(1250), schedule.flights[0].departure_time);
         assert_eq!(Time(1550), schedule.flights[0].arrival_time);
@@ -914,8 +927,9 @@ mod tests {
         add_flight(&mut flights, "FLIGHT_2", "WRO", "WAW", 1800, 2000, Some("PLANE_1"), Scheduled);
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
-        let broken = schedule.apply_delay(id("FLIGHT_1"), 50);
-        assert!(broken.is_empty());
+        let result = schedule.apply_delay(id("FLIGHT_1"), 50);
+        assert!(result.0.is_empty());
+        assert_eq!(vec![id("FLIGHT_1")], result.1);
 
         assert_eq!(Time(1250), schedule.flights[0].departure_time);
         assert_eq!(Time(1550), schedule.flights[0].arrival_time);

@@ -63,35 +63,43 @@ Unscheduled (Broken Chain):         0 (0.0%)
 ---------------------------
 Total Flights: 5000
 
->> delay FL_1911 1000
-Applied delay. 1 flights became unscheduled.
+>> delay FL_1922 1000
+Applied delay.
+Flights delayed: 2
+Flights unscheduled: 7
+
+>> curfew AP_75 1000 1500
+Applied airport curfew.
+Flights unscheduled: 40
+
 >> stats
 
 Fleet Utilization Summary:
 ---------------------------
-Scheduled:                          4713 (94.3%)
-Delayed:                            10 (0.2%)
+Scheduled:                          4675 (93.5%)
+Delayed:                            2 (0.0%)
 Unscheduled (Waiting):              276 (5.5%)
 Unscheduled (Max Delay Exceeded):   0 (0.0%)
-Unscheduled (Airport Curfew):       1 (0.0%)
+Unscheduled (Airport Curfew):       8 (0.2%)
 Unscheduled (Aircraft Maintenance): 0 (0.0%)
-Unscheduled (Broken Chain):         0 (0.0%)
+Unscheduled (Broken Chain):         39 (0.8%)
 ---------------------------
 Total Flights: 5000
 
 >> recover
 Recovery cycle complete.
+
 >> stats
 
 Fleet Utilization Summary:
 ---------------------------
-Scheduled:                          4731 (94.6%)
-Delayed:                            10 (0.2%)
-Unscheduled (Waiting):              258 (5.2%)
+Scheduled:                          4720 (94.4%)
+Delayed:                            2 (0.0%)
+Unscheduled (Waiting):              254 (5.1%)
 Unscheduled (Max Delay Exceeded):   0 (0.0%)
-Unscheduled (Airport Curfew):       1 (0.0%)
+Unscheduled (Airport Curfew):       4 (0.1%)
 Unscheduled (Aircraft Maintenance): 0 (0.0%)
-Unscheduled (Broken Chain):         0 (0.0%)
+Unscheduled (Broken Chain):         20 (0.4%)
 ---------------------------
 Total Flights: 5000
 

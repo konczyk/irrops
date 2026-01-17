@@ -146,8 +146,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "delay" => {
                         if let (Some(id), Some(mins)) = (parts.get(1), parts.get(2)) {
                             let mins_u64 = mins.parse::<u64>().unwrap_or(0);
-                            let broken = schedule.apply_delay(Arc::from(*id), mins_u64);
-                            println!("Applied delay. {} flights became unscheduled.", broken.len());
+                            let result = schedule.apply_delay(Arc::from(*id), mins_u64);
+                            println!("Applied delay.\nFlights delayed: {}\nFlights unscheduled: {}\n", result.1.len(), result.0.len());
                         } else {
                             println!("Usage: delay <flight_id> <minutes>");
                         }
@@ -157,7 +157,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let from_u64 = from.parse::<u64>().unwrap_or(0);
                             let to_u64 = to.parse::<u64>().unwrap_or(0);
                             let broken = schedule.apply_curfew(Arc::from(*id), Time(from_u64), Time(to_u64));
-                            println!("Applied airport curfew. {} flights became unscheduled.", broken.len());
+                            println!("Applied airport curfew.\nFlights unscheduled: {}\n", broken.len());
                         } else {
                             println!("Usage: curfew <airport_id> <minutes> <minutes>");
                         }
