@@ -9,7 +9,7 @@ use tabled::Tabled;
 
 pub type FlightId = Arc<str>;
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum UnscheduledReason {
     Waiting,
     MaxDelayExceeded,
