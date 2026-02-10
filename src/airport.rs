@@ -18,7 +18,7 @@ pub struct Airport {
     pub id: Arc<str>,
     pub mtt: u64,
     #[tabled(display = "format_disruptions")]
-    pub disruptions: Vec<Curfew>
+    pub disruptions: Vec<Curfew>,
 }
 
 impl fmt::Display for Airport {
@@ -31,8 +31,14 @@ fn format_disruptions(disruptions: &Vec<Curfew>) -> String {
     if disruptions.is_empty() {
         return "None".to_string();
     }
-    disruptions.iter()
-        .map(|Curfew {from: start, to: end }| format!("{}-{}", start, end))
+    disruptions
+        .iter()
+        .map(
+            |Curfew {
+                 from: start,
+                 to: end,
+             }| format!("{}-{}", start, end),
+        )
         .collect::<Vec<_>>()
         .join(", ")
 }

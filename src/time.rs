@@ -18,7 +18,6 @@ impl std::fmt::Display for Time {
         let mins = remaining % 60;
         write!(f, "DAY{} {:02}:{:02}", days + 1, hours, mins)
     }
-
 }
 
 impl Add<u64> for Time {
@@ -66,4 +65,3 @@ impl Div<Time> for Time {
         Time(self.0 / rhs.0)
     }
 }
-

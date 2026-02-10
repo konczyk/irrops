@@ -1,21 +1,21 @@
-use std::io::Write;
+use crate::flight::Flight;
+use crate::flight::FlightStatus::{Delayed, Scheduled, Unscheduled};
+use crate::flight::UnscheduledReason::*;
 use crate::schedule::Schedule;
+use crate::time::Time;
 use clap::Parser;
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
 use rustyline::{Context, Editor, Helper, Highlighter, Hinter, Validator};
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use tabled::settings::Style;
-use crate::flight::Flight;
-use crate::flight::FlightStatus::{Delayed, Scheduled, Unscheduled};
-use crate::flight::UnscheduledReason::*;
-use crate::time::Time;
 
 mod aircraft;
-mod flight;
 mod airport;
+mod flight;
 mod schedule;
 mod time;
 
@@ -34,7 +34,12 @@ pub struct CompleteHelper {
 impl Completer for CompleteHelper {
     type Candidate = Pair;
 
-    fn complete(&self, line: &str, _pos: usize, _ctx: &Context<'_>) -> rustyline::Result<(usize, Vec<Pair>)> {
+    fn complete(
+        &self,
+        line: &str,
+        _pos: usize,
+        _ctx: &Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<Pair>)> {
         let mut candidates = Vec::new();
 
         for cmd in &self.commands {
@@ -74,7 +79,10 @@ fn paginate(content: String) {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    println!("Tower online. Loaded flights from {}", args.scenario.display());
+    println!(
+        "Tower online. Loaded flights from {}",
+        args.scenario.display()
+    );
 
     let mut schedule = Schedule::load_from_file(args.scenario.to_str().unwrap())?;
     schedule.assign();
@@ -103,7 +111,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match readline {
             Ok(line) => {
                 let trimmed = line.trim();
-                if trimmed.is_empty() { continue; }
+                if trimmed.is_empty() {
+                    continue;
+                }
 
                 rl.add_history_entry(trimmed)?;
 
@@ -126,9 +136,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                         }
-                        let filtered_flights: Vec<&Flight> = schedule.flights.iter()
-                            .filter(|f| if let Some(d) = day { f.departure_time / Time(1440) == Time(d - 1) } else { true })
-                            .filter(|f| if let Some(s) = &status { f.status == *s } else { true })
+                        let filtered_flights: Vec<&Flight> = schedule
+                            .flights
+                            .iter()
+                            .filter(|f| {
+                                if let Some(d) = day {
+                                    f.departure_time / Time(1440) == Time(d - 1)
+                                } else {
+                                    true
+                                }
+                            })
+                            .filter(|f| {
+                                if let Some(s) = &status {
+                                    f.status == *s
+                                } else {
+                                    true
+                                }
+                            })
                             .collect();
                         if filtered_flights.is_empty() {
                             println!("No matching flights found.")
@@ -142,30 +166,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 println!("{}", table);
                             }
                         }
-                    },
+                    }
                     "delay" => {
                         if let (Some(id), Some(mins)) = (parts.get(1), parts.get(2)) {
                             let mins_u64 = mins.parse::<u64>().unwrap_or(0);
                             let result = schedule.apply_delay(Arc::from(*id), mins_u64);
-                            println!("Applied delay.\nFlights delayed: {}\nFlights unscheduled: {}\n", result.1.len(), result.0.len());
+                            println!(
+                                "Applied delay.\nFlights delayed: {}\nFlights unscheduled: {}\n",
+                                result.1.len(),
+                                result.0.len()
+                            );
                         } else {
                             println!("Usage: delay <flight_id> <minutes>");
                         }
-                    },
+                    }
                     "curfew" => {
-                        if let (Some(id), Some(from), Some(to)) = (parts.get(1), parts.get(2), parts.get(3)) {
+                        if let (Some(id), Some(from), Some(to)) =
+                            (parts.get(1), parts.get(2), parts.get(3))
+                        {
                             let from_u64 = from.parse::<u64>().unwrap_or(0);
                             let to_u64 = to.parse::<u64>().unwrap_or(0);
-                            let broken = schedule.apply_curfew(Arc::from(*id), Time(from_u64), Time(to_u64));
-                            println!("Applied airport curfew.\nFlights unscheduled: {}\n", broken.len());
+                            let broken =
+                                schedule.apply_curfew(Arc::from(*id), Time(from_u64), Time(to_u64));
+                            println!(
+                                "Applied airport curfew.\nFlights unscheduled: {}\n",
+                                broken.len()
+                            );
                         } else {
                             println!("Usage: curfew <airport_id> <minutes> <minutes>");
                         }
-                    },
+                    }
                     "recover" => {
                         schedule.assign();
                         println!("Recovery cycle complete.");
-                    },
+                    }
                     "stats" => {
                         let mut s = 0;
                         let mut d = 0;
@@ -190,38 +224,74 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                         println!("\nFleet Utilization Summary:");
                         println!("---------------------------");
-                        println!("Scheduled:                          {} ({:.1}%)", s, (s as f64 / total as f64) * 100.0);
-                        println!("Delayed:                            {} ({:.1}%)", d, (d as f64 / total as f64) * 100.0);
-                        println!("Unscheduled (Waiting):              {} ({:.1}%)", uw, (uw as f64 / total as f64) * 100.0);
-                        println!("Unscheduled (Max Delay Exceeded):   {} ({:.1}%)", umde, (umde as f64 / total as f64) * 100.0);
-                        println!("Unscheduled (Airport Curfew):       {} ({:.1}%)", uac, (uac as f64 / total as f64) * 100.0);
-                        println!("Unscheduled (Aircraft Maintenance): {} ({:.1}%)", uam, (uam as f64 / total as f64) * 100.0);
-                        println!("Unscheduled (Broken Chain):         {} ({:.1}%)", ubc, (ubc as f64 / total as f64) * 100.0);
+                        println!(
+                            "Scheduled:                          {} ({:.1}%)",
+                            s,
+                            (s as f64 / total as f64) * 100.0
+                        );
+                        println!(
+                            "Delayed:                            {} ({:.1}%)",
+                            d,
+                            (d as f64 / total as f64) * 100.0
+                        );
+                        println!(
+                            "Unscheduled (Waiting):              {} ({:.1}%)",
+                            uw,
+                            (uw as f64 / total as f64) * 100.0
+                        );
+                        println!(
+                            "Unscheduled (Max Delay Exceeded):   {} ({:.1}%)",
+                            umde,
+                            (umde as f64 / total as f64) * 100.0
+                        );
+                        println!(
+                            "Unscheduled (Airport Curfew):       {} ({:.1}%)",
+                            uac,
+                            (uac as f64 / total as f64) * 100.0
+                        );
+                        println!(
+                            "Unscheduled (Aircraft Maintenance): {} ({:.1}%)",
+                            uam,
+                            (uam as f64 / total as f64) * 100.0
+                        );
+                        println!(
+                            "Unscheduled (Broken Chain):         {} ({:.1}%)",
+                            ubc,
+                            (ubc as f64 / total as f64) * 100.0
+                        );
                         println!("---------------------------");
                         println!("Total Flights: {}\n", total);
-                    },
+                    }
                     "help" | "?" => {
                         println!("\nAvailable Commands:");
-                        println!("  ls [status]         - List all flights in a table or filter by status: u - unscheduled, s - scheduled, d - delayed");
-                        println!("  delay <id> <m>      - Inject <m> minutes of delay into flight <id>");
-                        println!("  curfew <id> <m> <m> - Inject a curfew from <m> to <m> minutes into airport <id>");
-                        println!("  recover             - Re-run assignment to repair unscheduled flights");
+                        println!(
+                            "  ls [status]         - List all flights in a table or filter by status: u - unscheduled, s - scheduled, d - delayed"
+                        );
+                        println!(
+                            "  delay <id> <m>      - Inject <m> minutes of delay into flight <id>"
+                        );
+                        println!(
+                            "  curfew <id> <m> <m> - Inject a curfew from <m> to <m> minutes into airport <id>"
+                        );
+                        println!(
+                            "  recover             - Re-run assignment to repair unscheduled flights"
+                        );
                         println!("  stats               - Display summary statistics");
                         println!("  help / ?            - Show this help menu");
                         println!("  exit / quit         - Exit the simulator\n");
-                    },
+                    }
                     "exit" | "quit" => break,
                     _ => println!("Unknown command: {}", parts[0]),
                 }
-            },
+            }
             Err(ReadlineError::Interrupted) => {
                 println!("CTRL-C");
                 break;
-            },
+            }
             Err(ReadlineError::Eof) => {
                 println!("CTRL-D");
                 break;
-            },
+            }
             Err(err) => {
                 println!("Error: {:?}", err);
                 break;
