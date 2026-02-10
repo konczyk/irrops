@@ -88,12 +88,50 @@ impl Schedule {
             .unwrap_or(false)
     }
 
+    fn is_airport_closed(
+        airports: &HashMap<AirportId, Airport>,
+        flight: &Flight,
+        dep_time: Time,
+        arr_time: Time,
+    ) -> bool {
+        let orig_closed = airports.get(&flight.origin_id).map_or(false, |ap| {
+            ap.disruptions
+                .iter()
+                .any(|d| d.from <= dep_time && d.to >= dep_time)
+        });
+        let dest_closed = airports.get(&flight.destination_id).map_or(false, |ap| {
+            ap.disruptions
+                .iter()
+                .any(|d| d.from <= arr_time && d.to >= arr_time)
+        });
+        orig_closed || dest_closed
+    }
+
+    fn violates_aircraft_maintenance(disruptions: &[Availability], dep: Time, arr: Time) -> bool {
+        disruptions
+            .iter()
+            .any(|d| Time::is_overlapping(&(dep, arr), &(d.from, d.to)))
+    }
+
     fn get_ready_time(
         airports: &HashMap<AirportId, Airport>,
         arrival_time: Time,
         airport_id: &AirportId,
     ) -> Time {
         arrival_time + airports.get(airport_id).map(|x| x.mtt).unwrap_or(0)
+    }
+
+    fn compute_shifted_times(
+        airports: &HashMap<AirportId, Airport>,
+        flight: &Flight,
+        prev_arrival: Time,
+    ) -> (Time, Time, bool) {
+        let len = flight.arrival_time - flight.departure_time;
+        let ready_at = Self::get_ready_time(airports, prev_arrival, &flight.origin_id);
+        let dep_time = ready_at.max(flight.departure_time);
+        let arr_time = dep_time + len;
+        let is_overlapping = flight.departure_time < ready_at;
+        (dep_time, arr_time, is_overlapping)
     }
 
     pub fn assign(&mut self) {
@@ -254,9 +292,11 @@ impl Schedule {
             return result;
         }
 
+        // lookup flight & aircraft
         let idx = self.flights_index.get(&flight_id);
         let flight_aircraft =
             idx.and_then(|i| Some((i, self.flights[*i].aircraft_id.as_ref().map(|x| x.clone()))));
+
         if let Some((f_id, ac_id)) = flight_aircraft {
             let empty_ac_vec = vec![];
             let ac_disruptions = ac_id
@@ -265,30 +305,9 @@ impl Schedule {
                 .map(|a| a.disruptions.as_slice())
                 .unwrap_or(&empty_ac_vec);
 
-            let is_ac_disrupted = |dep_time: Time, arr_time: Time| -> bool {
-                ac_disruptions
-                    .iter()
-                    .any(|d| Time::is_overlapping(&(dep_time, arr_time), &(d.from, d.to)))
-            };
-
-            let is_ap_disrupted = |flight: &Flight, dep_time: Time, arr_time: Time| -> bool {
-                let orig_closed = self.airports.get(&flight.origin_id).map_or(false, |ap| {
-                    ap.disruptions
-                        .iter()
-                        .any(|d| d.from <= dep_time && d.to >= dep_time)
-                });
-                let dest_closed = self
-                    .airports
-                    .get(&flight.destination_id)
-                    .map_or(false, |ap| {
-                        ap.disruptions
-                            .iter()
-                            .any(|d| d.from <= arr_time && d.to >= arr_time)
-                    });
-                orig_closed || dest_closed
-            };
-
             let mut is_broken = false;
+
+            // apply delay to triggering flight
             if shift > Self::MAX_DELAY {
                 result
                     .0
@@ -299,12 +318,21 @@ impl Schedule {
                 self.flights[*f_id].departure_time += shift;
                 self.flights[*f_id].arrival_time += shift;
                 let shifted_arr_time = self.flights[*f_id].arrival_time;
-                if is_ac_disrupted(orig_dep_time, shifted_arr_time) {
+                if Self::violates_aircraft_maintenance(
+                    &ac_disruptions,
+                    orig_dep_time,
+                    shifted_arr_time,
+                ) {
                     result
                         .0
                         .push((self.flights[*f_id].id.clone(), AircraftMaintenance));
                     is_broken = true;
-                } else if is_ap_disrupted(&self.flights[*f_id], orig_dep_time, shifted_arr_time) {
+                } else if Self::is_airport_closed(
+                    &self.airports,
+                    &self.flights[*f_id],
+                    orig_dep_time,
+                    shifted_arr_time,
+                ) {
                     result
                         .0
                         .push((self.flights[*f_id].id.clone(), AirportCurfew));
@@ -315,6 +343,7 @@ impl Schedule {
                 }
             }
 
+            // propagate delay along aircraft chain
             if let Some(ac_id) = ac_id {
                 let mut prev_arrival_time = self.flights[*f_id].arrival_time;
                 let mut prev_destination_id = self.flights[*f_id].destination_id.clone();
@@ -329,19 +358,14 @@ impl Schedule {
                         result.0.push((flight.id.clone(), BrokenChain));
                         continue;
                     }
-                    let len = flight.arrival_time - flight.departure_time;
-                    let ready_at =
-                        Self::get_ready_time(&self.airports, prev_arrival_time, &flight.origin_id);
-                    let dep_time = ready_at.max(flight.departure_time);
-                    let arr_time = dep_time + len;
-                    let is_overlapping = flight.departure_time
-                        < Self::get_ready_time(
-                            &self.airports,
-                            prev_arrival_time,
-                            &flight.origin_id,
-                        );
 
-                    let is_ac_disrupted = is_ac_disrupted(flight.departure_time, arr_time);
+                    let (dep_time, arr_time, is_overlapping) =
+                        Self::compute_shifted_times(&self.airports, flight, prev_arrival_time);
+                    let is_ac_disrupted = Self::violates_aircraft_maintenance(
+                        &ac_disruptions,
+                        flight.departure_time,
+                        arr_time,
+                    );
                     let is_at_wrong_airport = Self::is_at_wrong_airport(
                         ac_disruptions,
                         flight.departure_time,
@@ -351,7 +375,7 @@ impl Schedule {
                     if is_ac_disrupted || is_at_wrong_airport {
                         result.0.push((flight.id.clone(), AircraftMaintenance));
                         is_broken = true;
-                    } else if is_ap_disrupted(&flight, dep_time, arr_time) {
+                    } else if Self::is_airport_closed(&self.airports, &flight, dep_time, arr_time) {
                         result.0.push((flight.id.clone(), AirportCurfew));
                         is_broken = true;
                     } else if dep_time - flight.departure_time > Time(Self::MAX_DELAY) {
