@@ -170,11 +170,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "delay" => {
                         if let (Some(id), Some(mins)) = (parts.get(1), parts.get(2)) {
                             let mins_u64 = mins.parse::<u64>().unwrap_or(0);
-                            let result = schedule.apply_delay(Arc::from(*id), mins_u64);
+                            let report = schedule.apply_delay(Arc::from(*id), mins_u64);
                             println!(
-                                "Applied delay.\nFlights delayed: {}\nFlights unscheduled: {}\n",
-                                result.1.len(),
-                                result.0.len()
+                                "\nFlight {} delayed by {} min\n\nImpact:\n  Delayed: {} flight{}\n  Unscheduled: {} flight{}\n\nFirst break:\n  {}\n",
+                                *id,
+                                mins_u64,
+                                report.affected.len(),
+                                if report.affected.len() == 1 { "" } else { "s " },
+                                report.unscheduled.len(),
+                                if report.unscheduled.len() == 1 {
+                                    ""
+                                } else {
+                                    "s "
+                                },
+                                match report.first_break {
+                                    None => "None".to_string(),
+                                    Some((flight_id, reason)) =>
+                                        format!("{} ({:?})", flight_id, reason),
+                                }
                             );
                         } else {
                             println!("Usage: delay <flight_id> <minutes>");
@@ -186,11 +199,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         {
                             let from_u64 = from.parse::<u64>().unwrap_or(0);
                             let to_u64 = to.parse::<u64>().unwrap_or(0);
-                            let broken =
+                            let report =
                                 schedule.apply_curfew(Arc::from(*id), Time(from_u64), Time(to_u64));
                             println!(
-                                "Applied airport curfew.\nFlights unscheduled: {}\n",
-                                broken.len()
+                                "\nCurfew applied at {} ({} = {})\n\nImpact:\n  Unscheduled: {} flight{}\n\nFirst break:\n  {}\n",
+                                *id,
+                                from_u64,
+                                to_u64,
+                                report.unscheduled.len(),
+                                if report.unscheduled.len() == 1 {
+                                    ""
+                                } else {
+                                    "s "
+                                },
+                                match report.first_break {
+                                    None => "None".to_string(),
+                                    Some((flight_id, reason)) =>
+                                        format!("{} ({:?})", flight_id, reason),
+                                },
                             );
                         } else {
                             println!("Usage: curfew <airport_id> <minutes> <minutes>");
