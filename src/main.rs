@@ -1,7 +1,7 @@
 use crate::flight::Flight;
 use crate::flight::FlightStatus::{Delayed, Scheduled, Unscheduled};
 use crate::flight::UnscheduledReason::*;
-use crate::schedule::{DisruptionType, Schedule};
+use crate::schedule::schedule::{DisruptionType, Schedule};
 use crate::time::Time;
 use clap::Parser;
 use rustyline::completion::{Completer, Pair};
