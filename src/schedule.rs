@@ -11,8 +11,15 @@ use std::collections::HashMap;
 use std::io;
 
 pub enum DisruptionType {
-    Delay { flight: FlightId },
-    Curfew { airport: AirportId },
+    Delay {
+        flight: FlightId,
+        delay_by: u64,
+    },
+    Curfew {
+        airport: AirportId,
+        from: Time,
+        to: Time,
+    },
 }
 
 pub struct DisruptionReport {
@@ -27,6 +34,7 @@ pub struct Schedule {
     airports: HashMap<AirportId, Airport>,
     pub flights: Vec<Flight>,
     flights_index: HashMap<FlightId, usize>,
+    pub last_report: Option<DisruptionReport>,
 }
 
 impl Schedule {
@@ -48,7 +56,12 @@ impl Schedule {
             airports,
             flights,
             flights_index,
+            last_report: None,
         }
+    }
+
+    pub fn last_report(&self) -> Option<&DisruptionReport> {
+        self.last_report.as_ref()
     }
 
     pub fn load_from_file(path: &str) -> io::Result<Self> {
@@ -294,10 +307,11 @@ impl Schedule {
             })
     }
 
-    pub fn apply_delay(&mut self, flight_id: FlightId, shift: u64) -> DisruptionReport {
+    pub fn apply_delay(&mut self, flight_id: FlightId, shift: u64) {
         let mut report = DisruptionReport {
             kind: DisruptionType::Delay {
                 flight: flight_id.clone(),
+                delay_by: shift,
             },
             affected: vec![],
             unscheduled: vec![],
@@ -305,7 +319,7 @@ impl Schedule {
         };
 
         if shift == 0 {
-            return report;
+            return;
         }
 
         // lookup flight & aircraft
@@ -419,18 +433,15 @@ impl Schedule {
         });
         report.first_break = report.unscheduled.first().cloned();
 
-        report
+        self.last_report = Some(report);
     }
 
-    pub fn apply_curfew(
-        &mut self,
-        airport_id: AirportId,
-        from: Time,
-        to: Time,
-    ) -> DisruptionReport {
+    pub fn apply_curfew(&mut self, airport_id: AirportId, from: Time, to: Time) {
         let mut report = DisruptionReport {
             kind: DisruptionType::Curfew {
                 airport: airport_id.clone(),
+                from,
+                to,
             },
             affected: vec![],
             unscheduled: vec![],
@@ -489,7 +500,7 @@ impl Schedule {
         });
         report.first_break = report.unscheduled.first().cloned();
 
-        report
+        self.last_report = Some(report);
     }
 }
 
@@ -1004,8 +1015,10 @@ mod tests {
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
+        schedule.apply_delay(id("FLIGHT_1"), 500);
         let report = schedule
-            .apply_delay(id("FLIGHT_1"), 500)
+            .last_report
+            .unwrap()
             .unscheduled
             .iter()
             .map(|(x, _)| x.clone())
@@ -1076,8 +1089,10 @@ mod tests {
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
+        schedule.apply_delay(id("FLIGHT_1"), 500);
         let report = schedule
-            .apply_delay(id("FLIGHT_1"), 500)
+            .last_report
+            .unwrap()
             .unscheduled
             .iter()
             .map(|(x, _)| x.clone())
@@ -1146,8 +1161,10 @@ mod tests {
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
+        schedule.apply_delay(id("FLIGHT_1"), 150);
         let report = schedule
-            .apply_delay(id("FLIGHT_1"), 150)
+            .last_report
+            .unwrap()
             .unscheduled
             .iter()
             .map(|(x, _)| x.clone())
@@ -1216,8 +1233,10 @@ mod tests {
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
+        schedule.apply_delay(id("FLIGHT_1"), 500);
         let report = schedule
-            .apply_delay(id("FLIGHT_1"), 500)
+            .last_report
+            .unwrap()
             .unscheduled
             .iter()
             .map(|(x, _)| x.clone())
@@ -1283,8 +1302,10 @@ mod tests {
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
+        schedule.apply_delay(id("FLIGHT_1"), 2050);
         let report = schedule
-            .apply_delay(id("FLIGHT_1"), 2050)
+            .last_report
+            .unwrap()
             .unscheduled
             .iter()
             .map(|(x, _)| x.clone())
@@ -1350,13 +1371,14 @@ mod tests {
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
-        let report = schedule.apply_delay(id("FLIGHT_1"), 1999);
+        schedule.apply_delay(id("FLIGHT_1"), 1999);
+        let report = schedule.last_report.unwrap();
         let broken = report
             .unscheduled
             .iter()
             .map(|(x, _)| x.clone())
             .collect::<Vec<FlightId>>();
-        assert_eq!(vec![id("FLIGHT_2"), id("FLIGHT_3")], broken);
+        assert_eq!(vec![id("FLIGHT_2"), id("FLIGHT_3")], *broken);
         assert_eq!(vec![id("FLIGHT_1")], report.affected);
 
         assert_eq!(Time(200) + 1999, schedule.flights[0].departure_time);
@@ -1418,7 +1440,8 @@ mod tests {
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
-        let report = schedule.apply_delay(id("FLIGHT_1"), 100);
+        schedule.apply_delay(id("FLIGHT_1"), 100);
+        let report = schedule.last_report.unwrap();
         assert!(report.unscheduled.is_empty());
         assert_eq!(vec![id("FLIGHT_1")], report.affected);
 
@@ -1481,7 +1504,8 @@ mod tests {
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
-        let report = schedule.apply_delay(id("FLIGHT_1"), 500);
+        schedule.apply_delay(id("FLIGHT_1"), 500);
+        let report = schedule.last_report.unwrap();
         assert!(report.unscheduled.is_empty());
         assert_eq!(
             vec![id("FLIGHT_1"), id("FLIGHT_2"), id("FLIGHT_3")],
@@ -1547,7 +1571,8 @@ mod tests {
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
         schedule.assign();
-        let report = schedule.apply_delay(id("FLIGHT_1"), 1000);
+        schedule.apply_delay(id("FLIGHT_1"), 1000);
+        let report = schedule.last_report.unwrap();
         assert!(report.unscheduled.is_empty());
         assert_eq!(
             vec![id("FLIGHT_1"), id("FLIGHT_2"), id("FLIGHT_3")],
@@ -1607,7 +1632,8 @@ mod tests {
         );
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
-        let report = schedule.apply_delay(id("FLIGHT_1"), 50);
+        schedule.apply_delay(id("FLIGHT_1"), 50);
+        let report = schedule.last_report.unwrap();
         let broken = report
             .unscheduled
             .iter()
@@ -1665,7 +1691,8 @@ mod tests {
         );
 
         let mut schedule = Schedule::new(aircraft, airports, flights);
-        let report = schedule.apply_delay(id("FLIGHT_1"), 50);
+        schedule.apply_delay(id("FLIGHT_1"), 50);
+        let report = schedule.last_report.unwrap();
         assert!(report.unscheduled.is_empty());
         assert_eq!(vec![id("FLIGHT_1")], report.affected);
 
