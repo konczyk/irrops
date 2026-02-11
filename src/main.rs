@@ -19,6 +19,12 @@ mod flight;
 mod schedule;
 mod time;
 
+enum StatusFilter {
+    Unscheduled,
+    Scheduled,
+    Delayed,
+}
+
 #[derive(Parser)]
 struct Args {
     /// Path to the JSON scenario file
@@ -130,9 +136,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             } else {
                                 status = match *part {
-                                    "u" | "unscheduled" => Some(Unscheduled(Waiting)),
-                                    "s" | "scheduled" => Some(Scheduled),
-                                    "d" | "delayed" => Some(Delayed),
+                                    "u" | "unscheduled" => Some(StatusFilter::Unscheduled),
+                                    "s" | "scheduled" => Some(StatusFilter::Scheduled),
+                                    "d" | "delayed" => Some(StatusFilter::Delayed),
                                     _ => None,
                                 }
                             }
@@ -149,7 +155,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             })
                             .filter(|f| {
                                 if let Some(s) = &status {
-                                    f.status == *s
+                                    match s {
+                                        StatusFilter::Unscheduled => {
+                                            matches!(f.status, Unscheduled(_))
+                                        }
+                                        StatusFilter::Scheduled => matches!(f.status, Scheduled),
+                                        StatusFilter::Delayed => matches!(f.status, Delayed { .. }),
+                                    }
                                 } else {
                                     true
                                 }
@@ -318,7 +330,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         for f in &schedule.flights {
                             match f.status {
                                 Scheduled => s += 1,
-                                Delayed => d += 1,
+                                Delayed { .. } => d += 1,
                                 Unscheduled(Waiting) => uw += 1,
                                 Unscheduled(MaxDelayExceeded) => umde += 1,
                                 Unscheduled(AirportCurfew) => uac += 1,

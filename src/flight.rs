@@ -22,15 +22,12 @@ pub enum UnscheduledReason {
 pub enum FlightStatus {
     Unscheduled(UnscheduledReason),
     Scheduled,
-    Delayed,
+    Delayed { minutes: u64 },
 }
 
 impl FlightStatus {
     pub fn is_unscheduled(&self) -> bool {
-        match self {
-            FlightStatus::Unscheduled(_) => true,
-            _ => false,
-        }
+        matches!(self, FlightStatus::Unscheduled(_))
     }
 }
 
@@ -38,7 +35,7 @@ impl fmt::Display for FlightStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
             FlightStatus::Scheduled => "Scheduled".green(),
-            FlightStatus::Delayed => "Delayed".yellow(),
+            FlightStatus::Delayed { minutes } => format!("Delayed (+{}m)", minutes).yellow(),
             FlightStatus::Unscheduled(_) => "Unscheduled".red(),
         };
         write!(f, "{}", s)

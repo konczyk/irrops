@@ -304,7 +304,9 @@ impl Schedule {
                         ),
                     );
                 }
-            })
+            });
+
+        self.assert_invariants();
     }
 
     pub fn apply_delay(&mut self, flight_id: FlightId, shift: u64) {
@@ -368,7 +370,7 @@ impl Schedule {
                         .push((self.flights[*f_id].id.clone(), AirportCurfew));
                     is_broken = true;
                 } else {
-                    self.flights[*f_id].status = Delayed;
+                    self.flights[*f_id].status = Delayed { minutes: shift };
                     report.affected.push(self.flights[*f_id].id.clone());
                 }
             }
@@ -416,9 +418,11 @@ impl Schedule {
                             .push((flight.id.clone(), MaxDelayExceeded));
                         is_broken = true;
                     } else if is_overlapping {
+                        flight.status = Delayed {
+                            minutes: (dep_time - flight.departure_time).0,
+                        };
                         flight.departure_time = dep_time;
                         flight.arrival_time = arr_time;
-                        flight.status = Delayed;
                         prev_arrival_time = flight.arrival_time;
                         prev_destination_id = flight.destination_id.clone();
                         report.affected.push(flight.id.clone());
@@ -434,6 +438,8 @@ impl Schedule {
         report.first_break = report.unscheduled.first().cloned();
 
         self.last_report = Some(report);
+
+        self.assert_invariants();
     }
 
     pub fn apply_curfew(&mut self, airport_id: AirportId, from: Time, to: Time) {
@@ -501,5 +507,68 @@ impl Schedule {
         report.first_break = report.unscheduled.first().cloned();
 
         self.last_report = Some(report);
+
+        self.assert_invariants();
+    }
+
+    #[cfg(debug_assertions)]
+    fn assert_invariants(&self) {
+        debug_assert!(
+            self.flights.iter().all(|f| {
+                match &f.status {
+                    Unscheduled(_) => f.aircraft_id.is_none(),
+                    Scheduled | Delayed { .. } => f.aircraft_id.is_some(),
+                }
+            }),
+            "Status <-> aircraft_id invariant violated"
+        );
+
+        debug_assert!(
+            self.flights.iter().all(|f| {
+                match &f.status {
+                    Delayed { minutes } => *minutes > 0,
+                    _ => true,
+                }
+            }),
+            "Delay > 0 invariant violated"
+        );
+
+        let mut flight_by_aircraft: HashMap<AircraftId, Vec<&Flight>> = HashMap::new();
+        for flight in &self.flights {
+            if let Some(ac_id) = &flight.aircraft_id {
+                flight_by_aircraft
+                    .entry(ac_id.clone())
+                    .or_default()
+                    .push(flight);
+            }
+        }
+        for (ac_id, mut flights) in flight_by_aircraft.into_iter() {
+            flights.sort_by_key(|f| f.departure_time);
+            debug_assert!(
+                flights
+                    .windows(2)
+                    .all(|fs| { fs[0].destination_id == fs[1].origin_id }),
+                "Pref destination <-> next origin location continuity violated"
+            );
+            debug_assert!(
+                flights.windows(2).all(|fs| {
+                    let mtt = self
+                        .airports
+                        .get(&fs[0].destination_id)
+                        .map(|a| a.mtt)
+                        .unwrap();
+                    fs[1].departure_time >= fs[0].arrival_time + mtt
+                }),
+                "Pref destination <-> next origin temporal continuity violated"
+            );
+
+            if let Some(flight) = flights.first() {
+                debug_assert_eq!(
+                    flight.origin_id,
+                    self.aircraft.get(&ac_id).unwrap().initial_location_id,
+                    "First flight origin <-> aircraft initial location violated"
+                );
+            }
+        }
     }
 }

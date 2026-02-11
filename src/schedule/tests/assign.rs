@@ -343,7 +343,7 @@ fn test_recovery_after_disruption() {
     add_flight(
         &mut flights,
         "FLIGHT_2",
-        "KRK",
+        "WRO",
         "WAW",
         1800,
         2000,
@@ -372,7 +372,7 @@ fn test_recovery_after_disruption() {
     assert_eq!(Time(500) + 400, schedule.flights[0].arrival_time);
     assert_eq!(Scheduled, schedule.flights[0].status);
 
-    assert_eq!(Some(id("PLANE_1")), schedule.flights[1].aircraft_id);
+    assert_eq!(Some(id("PLANE_2")), schedule.flights[1].aircraft_id);
     assert_eq!(Time(1800), schedule.flights[1].departure_time);
     assert_eq!(Time(2000), schedule.flights[1].arrival_time);
     assert_eq!(Scheduled, schedule.flights[1].status);

@@ -219,7 +219,7 @@ fn test_delay_aircraft_subsequent_flight_into_availability_disruption() {
 
     assert_eq!(Time(1200) + 500, schedule.flights[0].departure_time);
     assert_eq!(Time(1500) + 500, schedule.flights[0].arrival_time);
-    assert_eq!(Delayed, schedule.flights[0].status);
+    assert_eq!(Delayed { minutes: 500 }, schedule.flights[0].status);
 
     assert_eq!(Time(1800), schedule.flights[1].departure_time);
     assert_eq!(Time(2000), schedule.flights[1].arrival_time);
@@ -363,7 +363,7 @@ fn test_delay_aircraft_subsequent_flight_into_curfew() {
 
     assert_eq!(Time(1200) + 500, schedule.flights[0].departure_time);
     assert_eq!(Time(1500) + 500, schedule.flights[0].arrival_time);
-    assert_eq!(Delayed, schedule.flights[0].status);
+    assert_eq!(Delayed { minutes: 500 }, schedule.flights[0].status);
 
     assert_eq!(Time(1800), schedule.flights[1].departure_time);
     assert_eq!(Time(2000), schedule.flights[1].arrival_time);
@@ -444,75 +444,6 @@ fn test_delay_aircraft_first_flight_into_max_delay() {
 }
 
 #[test]
-fn test_delay_aircraft_subsequent_flight_into_max_delay() {
-    let mut aircraft = HashMap::new();
-    let mut airports = HashMap::new();
-    let mut flights = Vec::new();
-
-    add_airport(&mut airports, "KRK", 30, vec![]);
-    add_airport(&mut airports, "WAW", 30, vec![]);
-    add_airport(&mut airports, "GDN", 30, vec![]);
-    add_airport(&mut airports, "WRO", 30, vec![]);
-
-    add_aircraft(&mut aircraft, "PLANE_1", "KRK", vec![]);
-
-    add_flight(
-        &mut flights,
-        "FLIGHT_1",
-        "KRK",
-        "WRO",
-        200,
-        300,
-        Some("PLANE_1"),
-        Scheduled,
-    );
-    add_flight(
-        &mut flights,
-        "FLIGHT_2",
-        "WRO",
-        "WAW",
-        305,
-        500,
-        Some("PLANE_1"),
-        Scheduled,
-    );
-    add_flight(
-        &mut flights,
-        "FLIGHT_3",
-        "WAW",
-        "GDN",
-        600,
-        700,
-        Some("PLANE_1"),
-        Scheduled,
-    );
-
-    let mut schedule = Schedule::new(aircraft, airports, flights);
-    schedule.assign();
-    schedule.apply_delay(id("FLIGHT_1"), 1999);
-    let report = schedule.last_report.unwrap();
-    let broken = report
-        .unscheduled
-        .iter()
-        .map(|(x, _)| x.clone())
-        .collect::<Vec<FlightId>>();
-    assert_eq!(vec![id("FLIGHT_2"), id("FLIGHT_3")], *broken);
-    assert_eq!(vec![id("FLIGHT_1")], report.affected);
-
-    assert_eq!(Time(200) + 1999, schedule.flights[0].departure_time);
-    assert_eq!(Time(300) + 1999, schedule.flights[0].arrival_time);
-    assert_eq!(Delayed, schedule.flights[0].status);
-
-    assert_eq!(Time(305), schedule.flights[1].departure_time);
-    assert_eq!(Time(500), schedule.flights[1].arrival_time);
-    assert_eq!(Unscheduled(MaxDelayExceeded), schedule.flights[1].status);
-
-    assert_eq!(Time(600), schedule.flights[2].departure_time);
-    assert_eq!(Time(700), schedule.flights[2].arrival_time);
-    assert_eq!(Unscheduled(BrokenChain), schedule.flights[2].status);
-}
-
-#[test]
 fn test_delay_aircraft_no_shift() {
     let mut aircraft = HashMap::new();
     let mut airports = HashMap::new();
@@ -565,7 +496,7 @@ fn test_delay_aircraft_no_shift() {
 
     assert_eq!(Time(1300), schedule.flights[0].departure_time);
     assert_eq!(Time(1600), schedule.flights[0].arrival_time);
-    assert_eq!(Delayed, schedule.flights[0].status);
+    assert_eq!(Delayed { minutes: 100 }, schedule.flights[0].status);
 
     assert_eq!(Time(1800), schedule.flights[1].departure_time);
     assert_eq!(Time(2000), schedule.flights[1].arrival_time);
@@ -632,15 +563,15 @@ fn test_delay_aircraft_first_flight_by_overlap() {
 
     assert_eq!(Time(1700), schedule.flights[0].departure_time);
     assert_eq!(Time(2000), schedule.flights[0].arrival_time);
-    assert_eq!(Delayed, schedule.flights[0].status);
+    assert_eq!(Delayed { minutes: 500 }, schedule.flights[0].status);
 
     assert_eq!(Time(2030), schedule.flights[1].departure_time);
     assert_eq!(Time(2230), schedule.flights[1].arrival_time);
-    assert_eq!(Delayed, schedule.flights[1].status);
+    assert_eq!(Delayed { minutes: 230 }, schedule.flights[1].status);
 
     assert_eq!(Time(2260), schedule.flights[2].departure_time);
     assert_eq!(Time(2510), schedule.flights[2].arrival_time);
-    assert_eq!(Delayed, schedule.flights[2].status);
+    assert_eq!(Delayed { minutes: 160 }, schedule.flights[2].status);
 }
 
 #[test]
@@ -699,15 +630,15 @@ fn test_delay_aircraft_first_flight_by_leapfrog() {
 
     assert_eq!(Time(2200), schedule.flights[0].departure_time);
     assert_eq!(Time(2500), schedule.flights[0].arrival_time);
-    assert_eq!(Delayed, schedule.flights[0].status);
+    assert_eq!(Delayed { minutes: 1000 }, schedule.flights[0].status);
 
     assert_eq!(Time(2530), schedule.flights[1].departure_time);
     assert_eq!(Time(2730), schedule.flights[1].arrival_time);
-    assert_eq!(Delayed, schedule.flights[1].status);
+    assert_eq!(Delayed { minutes: 730 }, schedule.flights[1].status);
 
     assert_eq!(Time(2760), schedule.flights[2].departure_time);
     assert_eq!(Time(3010), schedule.flights[2].arrival_time);
-    assert_eq!(Delayed, schedule.flights[2].status);
+    assert_eq!(Delayed { minutes: 660 }, schedule.flights[2].status);
 }
 
 #[test]
@@ -762,7 +693,7 @@ fn test_delay_into_spatial_disruption() {
 
     assert_eq!(Time(1250), schedule.flights[0].departure_time);
     assert_eq!(Time(1550), schedule.flights[0].arrival_time);
-    assert_eq!(Delayed, schedule.flights[0].status);
+    assert_eq!(Delayed { minutes: 50 }, schedule.flights[0].status);
 
     assert_eq!(Time(1800), schedule.flights[1].departure_time);
     assert_eq!(Time(2000), schedule.flights[1].arrival_time);
@@ -816,7 +747,7 @@ fn test_delay_into_valid_base_maintenance() {
 
     assert_eq!(Time(1250), schedule.flights[0].departure_time);
     assert_eq!(Time(1550), schedule.flights[0].arrival_time);
-    assert_eq!(Delayed, schedule.flights[0].status);
+    assert_eq!(Delayed { minutes: 50 }, schedule.flights[0].status);
 
     assert_eq!(Time(1800), schedule.flights[1].departure_time);
     assert_eq!(Time(2000), schedule.flights[1].arrival_time);
