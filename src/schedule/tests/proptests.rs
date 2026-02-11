@@ -15,9 +15,9 @@ proptest! {
         for (ac_id, loc_id) in aircraft_data {
             add_aircraft(&mut aircraft_map, ac_id.as_ref(), loc_id.as_ref(), vec![]);
         }
-        add_airport(&mut airports_map, "AP_1", 30, vec![]);
-        add_airport(&mut airports_map, "AP_2", 30, vec![]);
-        add_airport(&mut airports_map, "AP_3", 30, vec![]);
+        add_airport(&mut airports_map, "AP_1", 20, vec![]);
+        add_airport(&mut airports_map, "AP_2", 45, vec![]);
+        add_airport(&mut airports_map, "AP_3", 60, vec![]);
         let mut schedule = Schedule::new(aircraft_map, airports_map, flights);
 
         schedule.assign();
@@ -33,12 +33,16 @@ proptest! {
                 let first = &pair[0];
                 let second = &pair[1];
 
-                let ready_at = first.arrival_time + 30;
+                let mtt = schedule.airports
+                    .get(&first.destination_id)
+                    .unwrap()
+                    .mtt;
+                let ready_at = first.arrival_time + mtt;
 
                 prop_assert!(
                     second.departure_time >= ready_at,
-                    "\nOverlap on {}:\nFlight {} (ends {}+30m MTT) vs Flight {} (starts {})",
-                    ac_id, first.id, first.arrival_time, second.id, second.departure_time
+                    "\nOverlap on {}:\nFlight {} (ends {}+{}m MTT) vs Flight {} (starts {})",
+                    ac_id, first.id, first.arrival_time, mtt, second.id, second.departure_time
                 );
 
                 prop_assert!(

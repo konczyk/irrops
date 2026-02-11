@@ -31,7 +31,7 @@ pub struct DisruptionReport {
 
 pub struct Schedule {
     pub aircraft: HashMap<AircraftId, Aircraft>,
-    airports: HashMap<AirportId, Airport>,
+    pub airports: HashMap<AirportId, Airport>,
     pub flights: Vec<Flight>,
     flights_index: HashMap<FlightId, usize>,
     pub last_report: Option<DisruptionReport>,
