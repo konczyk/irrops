@@ -8,7 +8,9 @@ use crate::flight::{Flight, FlightId, UnscheduledReason};
 use crate::time::Time;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::fmt::{Debug, Formatter};
 use std::io;
+use std::io::Error;
 
 pub enum DisruptionType {
     Delay {
@@ -37,6 +39,34 @@ pub struct Schedule {
     pub last_report: Option<DisruptionReport>,
 }
 
+#[derive(Debug)]
+pub enum LoadError {
+    Io(io::Error),
+    Json(serde_json::Error),
+}
+
+impl std::fmt::Display for LoadError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoadError::Io(e) => write!(f, "IO error: {}", e),
+            LoadError::Json(e) => write!(f, "JSON parse error: {}", e),
+        }
+    }
+}
+
+impl From<Error> for LoadError {
+    fn from(value: Error) -> LoadError {
+        LoadError::Io(value)
+    }
+}
+impl From<serde_json::Error> for LoadError {
+    fn from(value: serde_json::Error) -> LoadError {
+        LoadError::Json(value)
+    }
+}
+
+impl std::error::Error for LoadError {}
+
 impl Schedule {
     const MAX_DELAY: u64 = 2000;
 
@@ -64,7 +94,7 @@ impl Schedule {
         self.last_report.as_ref()
     }
 
-    pub fn load_from_file(path: &str) -> io::Result<Self> {
+    pub fn load_from_file(path: &str) -> Result<Self, LoadError> {
         let data = std::fs::read_to_string(path)?;
         #[derive(Deserialize)]
         struct RawData {
@@ -306,6 +336,7 @@ impl Schedule {
                 }
             });
 
+        #[cfg(debug_assertions)]
         self.assert_invariants();
     }
 
@@ -439,6 +470,7 @@ impl Schedule {
 
         self.last_report = Some(report);
 
+        #[cfg(debug_assertions)]
         self.assert_invariants();
     }
 
@@ -508,6 +540,7 @@ impl Schedule {
 
         self.last_report = Some(report);
 
+        #[cfg(debug_assertions)]
         self.assert_invariants();
     }
 
